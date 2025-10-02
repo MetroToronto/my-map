@@ -6,14 +6,35 @@ html, body {
   height: 100%;
   width: 100%;
 }
-/* PD dropdown control */
+
+/* PD checkbox control */
 .pd-control {
   background: #fff;
-  padding: 6px;
+  padding: 8px;
   box-shadow: 0 1px 4px rgba(0,0,0,.25);
-  border-radius: 4px;
+  border-radius: 6px;
+  font: 14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  min-width: 240px;
 }
-.pd-control select {
-  max-width: 260px;
-  padding: 4px 6px;
+.pd-control .pd-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 6px; gap: 8px;
 }
+.pd-control .pd-actions {
+  display: flex; gap: 8px; font-size: 12px;
+}
+.pd-control .pd-actions button {
+  border: 1px solid #ddd; background: #f7f7f7; padding: 2px 6px; border-radius: 4px;
+  cursor: pointer;
+}
+.pd-control .pd-list {
+  max-height: 260px; overflow: auto; border-top: 1px solid #eee; padding-top: 6px;
+}
+.pd-item {
+  display: flex; align-items: center; gap: 8px; padding: 3px 0;
+}
+.pd-item label { cursor: pointer; flex: 1; }
+.pd-item:hover { background: rgba(0,0,0,.03); border-radius: 4px; }
+
+/* Optional highlight style for selected PD */
+.pd-selected { outline: 2px solid #d40000; }
