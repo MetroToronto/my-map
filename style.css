@@ -83,3 +83,88 @@ html, body {
   background: rgba(0,0,0,.03);
   border-radius: 4px;
 }
+html, body {
+  height: 100%;
+  margin: 0;
+}
+#map {
+  height: 100%;
+  width: 100%;
+}
+
+/* ---- PD control (width matches search bar via JS) ---- */
+.pd-control {
+  background: #fff;
+  padding: 8px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.25);
+  border-radius: 6px;
+  font: 14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  min-width: 260px;
+  box-sizing: border-box; /* width includes padding/border */
+}
+
+/* Title */
+.pd-control .pd-header {
+  margin: 0 0 10px 0;   /* tidy gap under title */
+  font-weight: 700;
+}
+
+/* Buttons row */
+.pd-control .pd-actions {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+  margin: 0 0 6px 0;    /* tighter gap below buttons */
+}
+.pd-control .pd-actions button {
+  flex: 0 0 auto;       /* Select/Clear = natural width */
+  border: 1px solid #ddd;
+  background: #f7f7f7;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 500;
+}
+/* Expand/Collapse fills the remaining row space */
+.pd-control .pd-actions .grow {
+  flex: 1;
+  text-align: center;
+  font-weight: 600;
+}
+
+/* Scrollable list (wheel doesn’t move map) */
+.pd-control .pd-list {
+  max-height: 260px;
+  overflow: auto;
+  border-top: 1px solid #eee;
+  padding-top: 6px;
+  margin-top: 6px;
+}
+/* Collapsed hides list */
+.pd-control.collapsed .pd-list {
+  display: none;
+}
+
+/* Items: small checkbox + zoomable name */
+.pd-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+.pd-item input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin: 0 2px 0 0;
+  width: 14px;
+  height: 14px;
+}
+.pd-name {
+  cursor: pointer;
+  flex: 1;
+  user-select: none;
+}
+.pd-item:hover {
+  background: rgba(0,0,0,.03);
+  border-radius: 4px;
+}
