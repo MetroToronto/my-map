@@ -74,44 +74,53 @@ fetch(PD_URL)
       </div>
     `).join('');
 
-    // Control (top-right, under geocoder)
+    // ----- Control (top-right, under geocoder) -----
     const PDControl = L.Control.extend({
       options: { position: 'topright' },
       onAdd: function () {
-        const div = L.DomUtil.create('div', 'pd-control');
+        const div = L.DomUtil.create('div', 'pd-control collapsed'); // start collapsed
+    
         div.innerHTML = `
           <div class="pd-header">
             <strong>Planning Districts</strong>
             <div class="pd-actions">
-              <button type="button" id="pd-toggle">Collapse</button>
               <button type="button" id="pd-select-all">Select all</button>
               <button type="button" id="pd-clear-all">Clear all</button>
+            </div>
+            <div class="pd-expand">
+              <button type="button" id="pd-toggle">Expand ▾</button>
             </div>
           </div>
           <div class="pd-list" id="pd-list">${itemsHTML}</div>
         `;
-        // Block map drag/scroll while interacting with the control
+    
+        // Make the PD control the same width as the geocoder
+        const geocoderEl = document.querySelector('.leaflet-control-geocoder');
+        const w = geocoderEl ? Math.round(geocoderEl.getBoundingClientRect().width) : 300;
+        div.style.width = w + 'px';
+    
+        // Prevent map drag/scroll while interacting with the control
         L.DomEvent.disableClickPropagation(div);
         L.DomEvent.disableScrollPropagation(div.querySelector('#pd-list'));
         return div;
       }
     });
     map.addControl(new PDControl());
-
-    // Elements
+    
+    // ----- Elements & handlers -----
     const listEl = document.getElementById('pd-list');
     const btnAll = document.getElementById('pd-select-all');
     const btnClr = document.getElementById('pd-clear-all');
     const btnTgl = document.getElementById('pd-toggle');
     const controlRoot = listEl.closest('.pd-control');
-
-    // Initially show all + fit to extent
+    
+    // Initially show all PDs (even though list starts collapsed)
     pdIndex.forEach(show);
     try {
       map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20,20] });
     } catch {}
-
-    // Checkbox toggles visibility only
+    
+    // Checkbox toggles visibility ONLY
     listEl.addEventListener('change', e => {
       const cbx = e.target.closest('.pd-cbx');
       if (!cbx) return;
@@ -120,7 +129,7 @@ fetch(PD_URL)
       if (!item) return;
       cbx.checked ? show(item) : hide(item);
     });
-
+    
     // Click PD NAME -> ensure visible, zoom + highlight (does NOT toggle checkbox)
     listEl.addEventListener('click', e => {
       const nameEl = e.target.closest('.pd-name');
@@ -128,18 +137,17 @@ fetch(PD_URL)
       const key = decodeURIComponent(nameEl.dataset.key);
       const item = pdIndex.find(i => i.key === key);
       if (!item) return;
-
-      // ensure visible
+    
       const cbx = document.getElementById(`pd-${encodeURIComponent(key)}`);
       if (cbx && !cbx.checked) { cbx.checked = true; show(item); }
-
+    
       reset();
       item.layer.setStyle(selectedStyle);
       try { item.layer.bringToFront?.(); } catch {}
       map.fitBounds(item.bounds, { padding: [30,30] });
       item.layer.openPopup();
     });
-
+    
     // Buttons
     btnAll.addEventListener('click', () => {
       document.querySelectorAll('.pd-cbx').forEach(c => c.checked = true);
@@ -149,17 +157,17 @@ fetch(PD_URL)
         map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20,20] });
       } catch {}
     });
-
+    
     btnClr.addEventListener('click', () => {
       document.querySelectorAll('.pd-cbx').forEach(c => c.checked = false);
       pdIndex.forEach(hide);
       reset();
     });
-
-    // Expand / Collapse list (UI only)
+    
+    // Expand / Collapse (UI only) with arrows
     btnTgl.addEventListener('click', () => {
       const collapsed = controlRoot.classList.toggle('collapsed');
-      btnTgl.textContent = collapsed ? 'Expand' : 'Collapse';
+      btnTgl.textContent = collapsed ? 'Expand ▾' : 'Collapse ▴';
     });
   })
   .catch(err => {
