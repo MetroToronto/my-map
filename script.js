@@ -1,10 +1,41 @@
+// ===== Map & basemap =====
+const map = L.map('map').setView([43.6532, -79.3832], 11);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '© OpenStreetMap'
+}).addTo(map);
+
+// ===== Geocoder (address search) =====
+try {
+  L.Control.geocoder({
+    collapsed: false,
+    defaultMarkGeocode: true
+  }).addTo(map);
+} catch (e) {
+  console.warn("Geocoder not loaded:", e);
+}
+
 // ===== Load PD polygons + checkbox UI (top-right) =====
-fetch('data/tts_pds.json')
-  .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+const PD_URL = 'data/tts_pds.json?v=' + Date.now(); // cache-buster
+
+fetch(PD_URL)
+  .then(r => {
+    if (!r.ok) throw new Error(`HTTP ${r.status} for ${r.url || PD_URL}`);
+    return r.text(); // get text first so we can diagnose JSON errors
+  })
+  .then(txt => {
+    try { return JSON.parse(txt); }
+    catch (e) {
+      console.error('JSON parse error:', e, 'First 200 chars:', txt.slice(0,200));
+      throw new Error('Invalid GeoJSON format');
+    }
+  })
   .then(geo => {
     const baseStyle     = { color: '#ff6600', weight: 1, fillOpacity: 0.15 };
     const selectedStyle = { color: '#d40000', weight: 3, fillOpacity: 0.25 };
 
+    // Group for visible PD layers
     const group = L.featureGroup().addTo(map);
 
     // Build feature index
@@ -30,11 +61,11 @@ fetch('data/tts_pds.json')
     });
 
     // Helpers
-    const show  = (i) => { if (!map.hasLayer(i.layer)) i.layer.addTo(group); };
-    const hide  = (i) => { if (map.hasLayer(i.layer))  group.removeLayer(i.layer); };
-    const reset = ()   => { pdIndex.forEach(i => i.layer.setStyle(baseStyle)); };
+    const show  = i => { if (!map.hasLayer(i.layer)) i.layer.addTo(group); };
+    const hide  = i => { if (map.hasLayer(i.layer))  group.removeLayer(i.layer); };
+    const reset = () => { pdIndex.forEach(i => i.layer.setStyle(baseStyle)); };
 
-    // Build list HTML (checkbox + clickable name span)
+    // Checkbox list HTML (checkbox + clickable name span)
     const itemsHTML = pdIndex.map(i => `
       <div class="pd-item">
         <input type="checkbox" class="pd-cbx" id="pd-${encodeURIComponent(i.key)}"
@@ -43,7 +74,7 @@ fetch('data/tts_pds.json')
       </div>
     `).join('');
 
-    // Control: top-right
+    // Control (top-right, under geocoder)
     const PDControl = L.Control.extend({
       options: { position: 'topright' },
       onAdd: function () {
@@ -59,41 +90,39 @@ fetch('data/tts_pds.json')
           </div>
           <div class="pd-list" id="pd-list">${itemsHTML}</div>
         `;
-        // prevent map drag/scroll when interacting with this control
+        // Block map drag/scroll while interacting with the control
         L.DomEvent.disableClickPropagation(div);
-        // VERY IMPORTANT: stop wheel scroll from panning map
-        const list = div.querySelector('#pd-list');
-        L.DomEvent.disableScrollPropagation(list);
+        L.DomEvent.disableScrollPropagation(div.querySelector('#pd-list'));
         return div;
       }
     });
     map.addControl(new PDControl());
 
-    // Wire up elements
+    // Elements
     const listEl = document.getElementById('pd-list');
     const btnAll = document.getElementById('pd-select-all');
     const btnClr = document.getElementById('pd-clear-all');
     const btnTgl = document.getElementById('pd-toggle');
     const controlRoot = listEl.closest('.pd-control');
 
-    // Initially show all + fit
+    // Initially show all + fit to extent
     pdIndex.forEach(show);
     try {
       map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20,20] });
     } catch {}
 
-    // Checkbox toggles visibility ONLY
-    listEl.addEventListener('change', (e) => {
+    // Checkbox toggles visibility only
+    listEl.addEventListener('change', e => {
       const cbx = e.target.closest('.pd-cbx');
       if (!cbx) return;
       const key = decodeURIComponent(cbx.dataset.key);
       const item = pdIndex.find(i => i.key === key);
       if (!item) return;
-      if (cbx.checked) show(item); else hide(item);
+      cbx.checked ? show(item) : hide(item);
     });
 
-    // Click on PD NAME (span) -> zoom + highlight (no checkbox toggle)
-    listEl.addEventListener('click', (e) => {
+    // Click PD NAME -> ensure visible, zoom + highlight (does NOT toggle checkbox)
+    listEl.addEventListener('click', e => {
       const nameEl = e.target.closest('.pd-name');
       if (!nameEl) return;
       const key = decodeURIComponent(nameEl.dataset.key);
@@ -134,6 +163,6 @@ fetch('data/tts_pds.json')
     });
   })
   .catch(err => {
-    console.error("Failed to load PDs:", err);
-    alert("Could not load PDs. See console for details.");
+    console.error('Failed to load PDs:', err);
+    alert('Could not load PDs. See console for details.');
   });
