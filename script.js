@@ -1,109 +1,152 @@
-console.log("Build v8 starting…");
-
-// Map
+// ===== Map & basemap =====
 const map = L.map('map').setView([43.6532, -79.3832], 11);
+
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19, attribution: '© OpenStreetMap'
+  maxZoom: 19,
+  attribution: '© OpenStreetMap'
 }).addTo(map);
 
-// Geocoder (non-fatal if missing)
+// ===== Geocoder (address search) =====
 try {
-  L.Control.geocoder({ collapsed: false, defaultMarkGeocode: true }).addTo(map);
-  console.log("Geocoder ready");
+  L.Control.geocoder({
+    collapsed: false,
+    defaultMarkGeocode: true
+  }).addTo(map);
 } catch (e) {
   console.warn("Geocoder not loaded:", e);
 }
 
-// --- Load PD polygons + build dropdown ---
+// ===== Load PD polygons + checkbox UI (top-right) =====
 fetch('data/tts_pds.json')
-  .then(r => r.json())
+  .then(r => {
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })
   .then(geo => {
     const baseStyle = { color: '#ff6600', weight: 1, fillOpacity: 0.15 };
+    const selectedStyle = { color: '#d40000', weight: 3, fillOpacity: 0.25 };
 
-    // Draw PDs
-    const pdLayer = L.geoJSON(geo, {
+    // Group for PD layers we decide to show
+    const group = L.featureGroup().addTo(map);
+
+    // Build an index: one layer per PD feature
+    const pdIndex = []; // { key, name, no, layer, bounds }
+    L.geoJSON(geo, {
       style: baseStyle,
       onEachFeature: (feature, layer) => {
         const p = feature.properties || {};
-        const label = p.PD_name || p.PD_no || "Planning District";
-        layer.bindPopup(label);
-        layer.on('mouseover', () => layer.setStyle({ weight: 2, fillOpacity: 0.25 }));
-        layer.on('mouseout',  () => layer.setStyle(baseStyle));
+        const name = (p.PD_name || p.PD_no || "Planning District").toString();
+        const key  = (p.PD_no != null ? String(p.PD_no) : name).trim();
+        layer.bindPopup(name);
+        pdIndex.push({ key, name, no: (p.PD_no ?? null), layer, bounds: layer.getBounds() });
       }
-    }).addTo(map);
-
-    // Keep overall bounds
-    const allBounds = pdLayer.getBounds();
-    map.fitBounds(allBounds, { padding: [20, 20] });
-
-    // Build an index of PD layers and a sorted option list
-    const pdIndex = []; // [{key, name, layer, bounds}]
-    pdLayer.eachLayer(layer => {
-      const p = layer.feature?.properties || {};
-      const name  = (p.PD_name || p.PD_no || "PD").toString();
-      // Use PD_no if present for a stable key; fallback to name
-      const key   = (p.PD_no != null ? String(p.PD_no) : name).trim();
-      pdIndex.push({ key, name, layer, bounds: layer.getBounds(), no: (p.PD_no ?? null) });
     });
 
-    // Sort by PD_no numerically if available, else by name
+    // Sort by PD number when available, otherwise by name
     pdIndex.sort((a, b) => {
-      const aHas = a.no !== null, bHas = b.no !== null;
-      if (aHas && bHas) return Number(a.no) - Number(b.no);
-      if (aHas && !bHas) return -1;
-      if (!aHas && bHas) return 1;
+      const ah = a.no !== null, bh = b.no !== null;
+      if (ah && bh) return Number(a.no) - Number(b.no);
+      if (ah && !bh) return -1;
+      if (!ah && bh) return 1;
       return a.name.localeCompare(b.name, undefined, { numeric: true });
     });
 
-    // Create dropdown HTML
-    const optionsHTML = [
-      `<option value="">— Select a PD —</option>`,
-      `<option value="__ALL__">Show all PDs</option>`,
-      ...pdIndex.map(item => `<option value="${encodeURIComponent(item.key)}">${item.name}</option>`)
-    ].join('');
+    // Helpers
+    function show(item) { if (!map.hasLayer(item.layer)) item.layer.addTo(group); }
+    function hide(item) { if (map.hasLayer(item.layer)) group.removeLayer(item.layer); }
+    function resetStyles() { pdIndex.forEach(i => i.layer.setStyle(baseStyle)); }
 
-    // Leaflet control with dropdown
+    // Create the checkbox list HTML
+    const itemsHTML = pdIndex.map(i => `
+      <div class="pd-item">
+        <input type="checkbox" class="pd-cbx" id="pd-${encodeURIComponent(i.key)}"
+               data-key="${encodeURIComponent(i.key)}" checked>
+        <label for="pd-${encodeURIComponent(i.key)}" data-key="${encodeURIComponent(i.key)}">
+          ${i.name}
+        </label>
+      </div>
+    `).join('');
+
+    // Leaflet control (TOP-RIGHT)
     const PDControl = L.Control.extend({
-      options: { position: 'topleft' },
+      options: { position: 'topright' },
       onAdd: function () {
         const div = L.DomUtil.create('div', 'pd-control');
-        div.innerHTML = `<select id="pdSelect">${optionsHTML}</select>`;
-        // Don’t let map drag when clicking the control
+        div.innerHTML = `
+          <div class="pd-header">
+            <strong>Planning Districts</strong>
+            <div class="pd-actions">
+              <button type="button" id="pd-select-all">Select all</button>
+              <button type="button" id="pd-clear-all">Clear all</button>
+            </div>
+          </div>
+          <div class="pd-list" id="pd-list">${itemsHTML}</div>
+        `;
+        // Prevent map drag when interacting with control
         L.DomEvent.disableClickPropagation(div);
         return div;
       }
     });
     map.addControl(new PDControl());
 
-    // Change handler
-    const selectEl = document.getElementById('pdSelect');
+    // Wire up behavior
+    const listEl = document.getElementById('pd-list');
+    const btnAll = document.getElementById('pd-select-all');
+    const btnClr = document.getElementById('pd-clear-all');
 
-    function resetHighlight() {
-      pdLayer.setStyle(baseStyle);
-    }
+    // Initially show all layers and fit to extent
+    pdIndex.forEach(show);
+    try {
+      map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20, 20] });
+    } catch {}
 
-    selectEl.addEventListener('change', () => {
-      const val = selectEl.value;
-      if (val === "__ALL__") {
-        resetHighlight();
-        map.fitBounds(allBounds, { padding: [20, 20] });
-        return;
-      }
-      const key = decodeURIComponent(val);
-      const item = pdIndex.find(x => x.key === key);
+    // Checkbox toggle (show/hide)
+    listEl.addEventListener('change', (e) => {
+      const cbx = e.target.closest('.pd-cbx');
+      if (!cbx) return;
+      const key = decodeURIComponent(cbx.dataset.key);
+      const item = pdIndex.find(i => i.key === key);
+      if (!item) return;
+      if (cbx.checked) show(item); else hide(item);
+    });
+
+    // Click PD name -> ensure visible, zoom + highlight
+    listEl.addEventListener('click', (e) => {
+      const label = e.target.closest('label[data-key]');
+      if (!label) return;
+      const key = decodeURIComponent(label.dataset.key);
+      const item = pdIndex.find(i => i.key === key);
       if (!item) return;
 
-      // Highlight the selected PD and zoom to it
-      resetHighlight();
-      item.layer.setStyle({ color: '#d40000', weight: 3, fillOpacity: 0.25 });
+      // ensure it's checked & visible
+      const cbx = document.getElementById(`pd-${encodeURIComponent(key)}`);
+      if (cbx && !cbx.checked) { cbx.checked = true; show(item); }
+
+      // highlight + zoom
+      resetStyles();
+      item.layer.setStyle(selectedStyle);
       try { item.layer.bringToFront?.(); } catch {}
       map.fitBounds(item.bounds, { padding: [30, 30] });
       item.layer.openPopup();
+    });
+
+    // Select all / Clear all buttons
+    btnAll.addEventListener('click', () => {
+      document.querySelectorAll('.pd-cbx').forEach(c => c.checked = true);
+      pdIndex.forEach(show);
+      resetStyles();
+      try {
+        map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20, 20] });
+      } catch {}
+    });
+
+    btnClr.addEventListener('click', () => {
+      document.querySelectorAll('.pd-cbx').forEach(c => c.checked = false);
+      pdIndex.forEach(hide);
+      resetStyles();
     });
   })
   .catch(err => {
     console.error("Failed to load PDs:", err);
     alert("Could not load PDs. See console for details.");
   });
-
-console.log("Build v8 loaded");
