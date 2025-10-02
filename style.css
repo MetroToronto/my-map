@@ -14,42 +14,57 @@ html, body {
   box-shadow: 0 1px 4px rgba(0,0,0,.25);
   border-radius: 6px;
   font: 14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  /* width will be set from JS to match geocoder; keep a sensible minimum */
+  box-sizing: border-box;          /* width (set in JS) includes padding/border */
   min-width: 260px;
 }
 
-.pd-control .pd-header {
-  display: block;   /* stack header sections */
-  margin-bottom: 6px;
-}
+/* Title + actions row */
+.pd-control .pd-header { margin: 0 0 6px 0; }
 
-/* Select/Clear row (same-size buttons) */
 .pd-control .pd-actions {
-  display: flex; gap: 6px; margin-top: 4px;
+  display: flex; gap: 6px; align-items: stretch;
 }
+
+/* Uniform button styling */
 .pd-control .pd-actions button {
-  border: 1px solid #ddd; background: #f7f7f7;
-  padding: 6px 8px; border-radius: 4px; cursor: pointer;
+  border: 1px solid #ddd;
+  background: #f7f7f7;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
-/* Expand/Collapse button on its own row, full width */
-.pd-control .pd-expand { margin-top: 6px; }
-.pd-control .pd-expand button {
-  width: 100%;
-  border: 1px solid #ddd; background: #f7f7f7;
-  padding: 6px 8px; border-radius: 4px; cursor: pointer; font-weight: 600;
+/* Expand/Collapse sits on the right and fills remaining space */
+.pd-control .pd-actions .grow {
+  margin-left: auto;
+  flex: 1;                 /* take up the rest of the row */
+  font-weight: 600;
+  text-align: center;
 }
 
-/* Scrollable list that does not bubble wheel events to the map */
+/* Scrollable list; uniform spacing; no extra space when collapsed */
 .pd-control .pd-list {
-  max-height: 260px; overflow: auto; border-top: 1px solid #eee; padding-top: 6px;
+  max-height: 260px;
+  overflow: auto;          /* enables internal scrolling */
+  border-top: 1px solid #eee;
+  padding-top: 6px;
+  margin-top: 6px;
 }
-
-/* Collapsed state hides the list */
 .pd-control.collapsed .pd-list { display: none; }
 
-/* Items: small checkbox click target; name is the zoom target */
-.pd-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
-.pd-item input[type="checkbox"] { flex: 0 0 auto; margin: 0 2px 0 0; width: 14px; height: 14px; }
-.pd-name { cursor: pointer; flex: 1; user-select: none; }
+/* Items: small checkbox hitbox; PD name is the zoom target */
+.pd-item {
+  display: flex; align-items: center; gap: 8px; padding: 3px 0;
+}
+.pd-item input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin: 0 2px 0 0;
+  width: 14px; height: 14px;      /* small “hitbox” for the checkmark */
+}
+.pd-name {
+  cursor: pointer;
+  flex: 1;
+  user-select: none;               /* clicking the text won’t highlight it */
+}
 .pd-item:hover { background: rgba(0,0,0,.03); border-radius: 4px; }
