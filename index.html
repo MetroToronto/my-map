@@ -1,21 +1,48 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>My Searchable Map</title>
   <meta charset="utf-8" />
+  <title>My Searchable Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- Leaflet CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
-  <!-- Your CSS -->
-  <link rel="stylesheet" href="style.css"/>
+  <!-- Leaflet core -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <!-- Geocoder plugin (for address search) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css">
+  <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
+  <style>
+    /* Fullscreen map */
+    html, body {
+      height: 100%;
+      margin: 0;
+    }
+    #map {
+      height: 100%;
+      width: 100%;
+    }
+  </style>
 </head>
 <body>
   <div id="map"></div>
 
-  <!-- Leaflet JS -->
-  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-  <!-- Your JS -->
-  <script src="script.js"></script>
+  <script>
+    // Initialize the map
+    const map = L.map('map').setView([43.6532, -79.3832], 12); // Toronto start
+
+    // Add basemap
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    // Add a geocoder (search bar) - no API key needed
+    L.Control.geocoder({
+      collapsed: false,          // show the box by default
+      defaultMarkGeocode: true   // drop a marker + zoom
+    }).addTo(map);
+  </script>
 </body>
 </html>
