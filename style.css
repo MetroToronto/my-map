@@ -6,3 +6,14 @@ html, body {
   height: 100%;
   width: 100%;
 }
+/* PD dropdown control */
+.pd-control {
+  background: #fff;
+  padding: 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.25);
+  border-radius: 4px;
+}
+.pd-control select {
+  max-width: 260px;
+  padding: 4px 6px;
+}
