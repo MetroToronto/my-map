@@ -22,7 +22,7 @@ const PD_URL = 'data/tts_pds.json?v=' + Date.now(); // cache-buster
 fetch(PD_URL)
   .then(r => {
     if (!r.ok) throw new Error(`HTTP ${r.status} for ${r.url || PD_URL}`);
-    return r.text(); // get text first so we can diagnose JSON errors
+    return r.text(); // read as text first to catch JSON errors
   })
   .then(txt => {
     try { return JSON.parse(txt); }
@@ -74,7 +74,7 @@ fetch(PD_URL)
       </div>
     `).join('');
 
-    // Control (top-right, under geocoder)
+    // ---- Control (top-right, under geocoder) ----
     const PDControl = L.Control.extend({
       options: { position: 'topright' },
       onAdd: function () {
@@ -93,10 +93,11 @@ fetch(PD_URL)
           <div class="pd-list" id="pd-list">${itemsHTML}</div>
         `;
 
-        // Match PD panel width to geocoder (exactly; includes padding via box-sizing)
+        // Match PD panel width to geocoder exactly
         const geocoderEl = document.querySelector('.leaflet-control-geocoder');
-        const w = geocoderEl ? Math.round(geocoderEl.getBoundingClientRect().width) : 300;
-        div.style.width = w + 'px';
+        if (geocoderEl) {
+          div.style.width = geocoderEl.offsetWidth + 'px';
+        }
 
         // Don’t let interactions scroll/pan the map
         L.DomEvent.disableClickPropagation(div);
