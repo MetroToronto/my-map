@@ -1,4 +1,8 @@
+html, body {
+  height: 100%;
+  margin: 0;
+}
 #map {
-  height: 100vh;  /* Full screen height */
-  width: 100%;    /* Full screen width */
+  height: 100%;
+  width: 100%;
 }
