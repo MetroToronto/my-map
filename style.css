@@ -20,7 +20,7 @@ html, body {
 
 /* Title */
 .pd-control .pd-header {
-  margin: 0 0 10px 0;   /* tidy gap under title */
+  margin: 0 0 8px 0;   /* add gap under the title */
   font-weight: 700;
 }
 
@@ -29,7 +29,7 @@ html, body {
   display: flex;
   gap: 6px;
   align-items: stretch;
-  margin: 0 0 6px 0;    /* tighter gap below buttons */
+  margin: 0;            /* remove the extra bottom margin */
 }
 .pd-control .pd-actions button {
   flex: 0 0 auto;       /* Select/Clear = natural width */
