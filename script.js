@@ -13,6 +13,16 @@ try {
   console.warn("Geocoder not loaded:", e);
 }
 
+// ===== Helper to derive PD key consistently from properties =====
+function pdKeyFromProps(p) {
+  // Try common field names used for PD number/id; fallback to name
+  const cand =
+    p?.PD_no ?? p?.pd_no ?? p?.PDID ?? p?.PD_ID ?? p?.PD ?? p?.pd ??
+    p?.PD_NAME ?? p?.PD_name ?? null;
+  if (cand != null) return String(cand).trim();
+  return String(p?.PD_name || p?.PD_NAME || p?.name || 'PD').trim();
+}
+
 // ===== Load PD polygons + checkbox UI (top-right) =====
 const PD_URL = 'data/tts_pds.json?v=' + Date.now(); // cache-buster
 
@@ -73,11 +83,9 @@ fetch(PD_URL)
       onEachFeature: (feature, layer) => {
         const p = feature.properties || {};
         const name = (p.PD_name || p.PD_no || "Planning District").toString();
-        const key  = (p.PD_no != null ? String(p.PD_no) : name).trim();
+        const key  = pdKeyFromProps(p);
 
-        // Removed popup binding so only the bold tooltip label appears
-        // layer.bindPopup(name);
-
+        // NO popup (we use only the bold tooltip label)
         pdIndex.push({ key, name, no: (p.PD_no ?? null), layer, bounds: layer.getBounds() });
 
         // Click on map polygon -> toggle select/highlight
@@ -110,10 +118,12 @@ fetch(PD_URL)
     function clearSelection() {
       reset();
       hideLabel();
-      map.closePopup();              // ensure any stray popups are closed
-      clearListSelection();          // unbold the list row
+      map.closePopup();              // just in case
+      clearListSelection();
       selectedKey = null;
       selectedItem = null;
+      // also clear zones (if engaged)
+      if (typeof window._zonesClear === 'function') window._zonesClear();
     }
 
     function selectItem(item, { zoom = false } = {}) {
@@ -123,11 +133,12 @@ fetch(PD_URL)
       try { item.layer.bringToFront?.(); } catch {}
       showLabel(item);
       if (zoom) map.fitBounds(item.bounds, { padding: [30,30] });
-      // Removed openPopup so only the bold tooltip label shows
-      // item.layer.openPopup();
       selectedKey = item.key;
       selectedItem = item;
-      markListSelected(item.key);    // bold the selected list row
+      markListSelected(item.key);
+
+      // show zones for this PD (if engaged)
+      if (typeof window._zonesShowFor === 'function') window._zonesShowFor(item.key);
     }
 
     // Build the checkbox list UI
@@ -139,7 +150,7 @@ fetch(PD_URL)
       </div>
     `).join('');
 
-    // ---- Control (top-right, under geocoder) ----
+    // ---- PD Control (top-right, under geocoder) ----
     const PDControl = L.Control.extend({
       options: { position: 'topright' },
       onAdd: function () {
@@ -216,7 +227,6 @@ fetch(PD_URL)
     btnAll.addEventListener('click', () => {
       document.querySelectorAll('.pd-cbx').forEach(c => c.checked = true);
       pdIndex.forEach(show);
-      // keep current selection as-is
       try {
         map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20,20] });
       } catch {}
@@ -237,4 +247,102 @@ fetch(PD_URL)
   .catch(err => {
     console.error('Failed to load PDs:', err);
     alert('Could not load PDs. See console for details.');
+  });
+
+// ========================
+// Planning Zones (TTS zones)
+// ========================
+
+const ZONES_URL = 'data/tts_zones.json?v=' + Date.now(); // cache-buster
+let zonesEngaged = false;
+const zonesGroup = L.featureGroup(); // holds only the selected PD's zones
+const zonesByKey = new Map();        // key -> [layer, layer, ...]
+
+fetch(ZONES_URL)
+  .then(r => {
+    if (!r.ok) throw new Error(`HTTP ${r.status} for ${r.url || ZONES_URL}`);
+    return r.text();
+  })
+  .then(txt => {
+    try { return JSON.parse(txt); }
+    catch (e) {
+      console.error('ZONES JSON parse error:', e, 'First 200 chars:', txt.slice(0,200));
+      throw new Error('Invalid Zones GeoJSON format');
+    }
+  })
+  .then(zGeo => {
+    const zoneStyle = { color: '#2166f3', weight: 0.8, fillOpacity: 0.08 };
+
+    // Pre-index zones by PD key; do not add to map yet
+    L.geoJSON(zGeo, {
+      style: zoneStyle,
+      onEachFeature: (f, lyr) => {
+        const k = pdKeyFromProps(f.properties || {});
+        const key = String(k || '').trim();
+        if (!key) return;
+        if (!zonesByKey.has(key)) zonesByKey.set(key, []);
+        zonesByKey.get(key).push(lyr);
+      }
+    });
+
+    // --- Control UI (same style/width as PD box) ---
+    const ZonesControl = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd: function () {
+        const div = L.DomUtil.create('div', 'pd-control');
+        div.innerHTML = `
+          <div class="pd-header">
+            <strong>Planning Zones</strong>
+            <div class="pd-actions">
+              <button type="button" id="pz-engage">Engage</button>
+              <button type="button" id="pz-disengage">Disengage</button>
+            </div>
+          </div>
+        `;
+        // match geocoder width
+        const geocoderEl = document.querySelector('.leaflet-control-geocoder');
+        if (geocoderEl) div.style.width = geocoderEl.offsetWidth + 'px';
+
+        L.DomEvent.disableClickPropagation(div);
+        return div;
+      }
+    });
+    map.addControl(new ZonesControl());
+
+    const btnEng = document.getElementById('pz-engage');
+    const btnDis = document.getElementById('pz-disengage');
+
+    function setMode(engaged) {
+      zonesEngaged = engaged;
+      btnEng.classList.toggle('active', engaged);
+      btnDis.classList.toggle('active', !engaged);
+      if (!engaged) _zonesClear();
+    }
+
+    // public helpers so PD selection can notify us
+    window._zonesClear = function _zonesClear() {
+      zonesGroup.clearLayers();
+      if (map.hasLayer(zonesGroup)) map.removeLayer(zonesGroup);
+    };
+    window._zonesShowFor = function _zonesShowFor(pdKey) {
+      if (!zonesEngaged) return;
+      const arr = zonesByKey.get(String(pdKey)) || [];
+      zonesGroup.clearLayers();
+      arr.forEach(lyr => lyr.addTo(zonesGroup));
+      if (!map.hasLayer(zonesGroup) && arr.length) zonesGroup.addTo(map);
+    };
+
+    // Buttons behavior
+    btnEng.addEventListener('click', () => {
+      setMode(true);
+      // If a PD is already selected, ask PD block (via global) to show its zones
+      // We can't read selected PD directly here, but PD code will call _zonesShowFor on selection.
+    });
+    btnDis.addEventListener('click', () => setMode(false));
+
+    // Default mode
+    setMode(false); // start "Disengage"
+  })
+  .catch(err => {
+    console.error('Failed to load Planning Zones:', err);
   });
