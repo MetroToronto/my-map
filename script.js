@@ -56,6 +56,16 @@ fetch(PD_URL)
       try { selectedLabel.remove(); } catch {}
     }
 
+    // Helpers to mark/unmark the selected row in the list
+    function clearListSelection() {
+      document.querySelectorAll('.pd-item.selected').forEach(el => el.classList.remove('selected'));
+    }
+    function markListSelected(key) {
+      clearListSelection();
+      const cbx = document.getElementById(`pd-${encodeURIComponent(key)}`);
+      if (cbx) cbx.closest('.pd-item')?.classList.add('selected');
+    }
+
     // Build feature index
     const pdIndex = []; // { key, name, no, layer, bounds }
     L.geoJSON(geo, {
@@ -64,7 +74,10 @@ fetch(PD_URL)
         const p = feature.properties || {};
         const name = (p.PD_name || p.PD_no || "Planning District").toString();
         const key  = (p.PD_no != null ? String(p.PD_no) : name).trim();
-        layer.bindPopup(name);
+
+        // Removed popup binding so only the bold tooltip label appears
+        // layer.bindPopup(name);
+
         pdIndex.push({ key, name, no: (p.PD_no ?? null), layer, bounds: layer.getBounds() });
 
         // Click on map polygon -> toggle select/highlight
@@ -97,6 +110,8 @@ fetch(PD_URL)
     function clearSelection() {
       reset();
       hideLabel();
+      map.closePopup();              // ensure any stray popups are closed
+      clearListSelection();          // unbold the list row
       selectedKey = null;
       selectedItem = null;
     }
@@ -108,9 +123,11 @@ fetch(PD_URL)
       try { item.layer.bringToFront?.(); } catch {}
       showLabel(item);
       if (zoom) map.fitBounds(item.bounds, { padding: [30,30] });
-      item.layer.openPopup();
+      // Removed openPopup so only the bold tooltip label shows
+      // item.layer.openPopup();
       selectedKey = item.key;
       selectedItem = item;
+      markListSelected(item.key);    // bold the selected list row
     }
 
     // Build the checkbox list UI
