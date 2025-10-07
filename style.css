@@ -7,23 +7,22 @@ html, body {
   width: 100%;
 }
 
-/* ---- PD control (width matches search bar via JS) ---- */
+/* ---- Control panels (PD & Zones share this) ---- */
 .pd-control {
   background: #fff;
-  /* you can tweak bottom padding; 6–8px works well */
-  padding: 8px 8px 8px;
+  padding: 8px 8px 8px; /* adjust bottom padding if you want tighter/looser */
   box-shadow: 0 1px 4px rgba(0,0,0,.25);
   border-radius: 6px;
   font: 14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   min-width: 260px;
-  box-sizing: border-box; /* include padding/border in JS-set width */
+  box-sizing: border-box; /* JS sets exact width to match geocoder */
 }
 
-/* Title: spacing above buttons lives on the title element itself */
+/* Title above the buttons */
 .pd-control .pd-header { margin: 0; }
 .pd-control .pd-header > strong {
   display: block;
-  margin-bottom: 4px;  /* gap between title and buttons */
+  margin-bottom: 4px; /* gap between title and button row */
   font-weight: 700;
 }
 
@@ -32,10 +31,10 @@ html, body {
   display: flex;
   gap: 6px;
   align-items: stretch;
-  margin: 0;            /* remove extra space under buttons */
+  margin: 0; /* no extra margin under the buttons */
 }
 .pd-control .pd-actions button {
-  flex: 0 0 auto;       /* Select/Clear = natural width */
+  flex: 0 0 auto; /* natural width for most buttons */
   border: 1px solid #ddd;
   background: #f7f7f7;
   padding: 6px 8px;
@@ -44,22 +43,22 @@ html, body {
   white-space: nowrap;
   font-weight: 500;
 }
-/* The right-most button fills the remaining row space (e.g., Expand ▾) */
+/* Right-aligned button that fills remaining row space (e.g., Expand ▾) */
 .pd-control .pd-actions .grow {
   flex: 1;
   text-align: center;
   font-weight: 600;
 }
 
-/* Active state for Engage/Disengage buttons */
+/* Active state (for Engage/Disengage) */
 .pd-control .pd-actions button.active {
-  background: #dbeafe;          /* light blue */
-  border-color: #60a5fa;        /* blue border */
-  color: #1e3a8a;               /* dark blue text */
+  background: #dbeafe;   /* light blue */
+  border-color: #60a5fa; /* blue border */
+  color: #1e3a8a;        /* dark blue text */
   font-weight: 600;
 }
 
-/* Scrollable list */
+/* Scrollable list under the PD buttons */
 .pd-control .pd-list {
   max-height: 260px;
   overflow: auto;
@@ -69,7 +68,7 @@ html, body {
 }
 .pd-control.collapsed .pd-list { display: none; }
 
-/* Items */
+/* PD list items */
 .pd-item {
   display: flex;
   align-items: center;
@@ -91,19 +90,21 @@ html, body {
   background: rgba(0,0,0,.03);
   border-radius: 4px;
 }
-/* Bold the PD name when it’s selected */
+/* Bold PD name when selected */
 .pd-item.selected .pd-name { font-weight: 800; }
 
-/* Labels */
+/* Map labels */
 .pd-label {
   font-weight: 800;
   font-size: 13px;
   text-shadow: 0 0 3px #fff, 0 0 3px #fff;
   pointer-events: none;
 }
+
+/* Zone labels (clickable so they can open popups) */
 .zone-label {
   font-weight: 800;
   font-size: 12px;
   text-shadow: 0 0 3px #fff, 0 0 3px #fff;
-  pointer-events: none;
+  pointer-events: auto; /* must be clickable for label-only popups */
 }
