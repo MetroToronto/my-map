@@ -23,11 +23,11 @@ function pdKeyFromProps(p) {
   if (cand != null) return String(cand).trim();
   return String(p?.PD_name || p?.PD_NAME || p?.name || 'PD').trim();
 }
-// Zone name/number in your zones GeoJSON; tries common keys
 function zoneKeyFromProps(p) {
+  // Prefer TTS2022 as the Planning Zone number, then fallbacks
   const cand =
-    p?.ZONE ?? p?.ZONE_ID ?? p?.ZN_ID ?? p?.TTS_ZONE ?? p?.Zone ??
-    p?.Z_no ?? p?.Z_ID ?? p?.ZONE_NO ?? p?.ZONE_NUM ?? null;
+    p?.TTS2022 ?? p?.ZONE ?? p?.ZONE_ID ?? p?.ZN_ID ?? p?.TTS_ZONE ??
+    p?.Zone ?? p?.Z_no ?? p?.Z_ID ?? p?.ZONE_NO ?? p?.ZONE_NUM ?? null;
   return String(cand ?? 'Zone').trim();
 }
 
@@ -239,14 +239,15 @@ fetch(PD_URL)
   });
 
 /* -------------------------------------------------------
-   Planning Zones (interactive, Engage/Disengage)
+   Planning Zones (interactive; label-only popup; dblclick clears without zoom)
 --------------------------------------------------------*/
 const ZONES_URL = 'data/tts_zones.json?v=' + Date.now();
-const ZONE_LABEL_ZOOM = 13; // show zone labels at/above this zoom
+const ZONE_LABEL_ZOOM = 13; // labels visible at/above this zoom
 
 let zonesEngaged = false;
-const zonesGroup = L.featureGroup(); // visible zones for the current PD
-const zonesByKey = new Map();        // PD key -> [GeoJSON Feature, ...]
+const zonesGroup = L.featureGroup();       // visible zone polygons for current PD
+const zonesLabelGroup = L.featureGroup();  // clickable labels for current PD
+const zonesByKey = new Map();              // PD key -> [GeoJSON Feature, ...]
 let selectedZoneLayer = null;
 let selectedZoneKey = null;
 
@@ -319,7 +320,22 @@ fetch(ZONES_URL)
       selectedZoneKey = null;
     }
 
-    function selectZone(layer, props, pdKey) {
+    // Popup HTML format: bold + underline title, then Reg_name, then PD: PD_no
+    function zonePopupHTML(props) {
+      const z = zoneKeyFromProps(props);
+      const reg = props?.Reg_name ?? '';
+      const pdno = props?.PD_no ?? props?.pd_no ?? '';
+      return `
+        <div>
+          <strong><u>TTS2022 Planning Zone ${z}</u></strong><br/>
+          ${reg}<br/>
+          PD: ${pdno}
+        </div>
+      `;
+    }
+
+    // Select / unselect a zone (polygon highlight only; popup is opened by label)
+    function selectZone(layer, props) {
       const zKey = zoneKeyFromProps(props);
       if (selectedZoneLayer === layer) {
         // toggle off
@@ -331,53 +347,84 @@ fetch(ZONES_URL)
       selectedZoneKey = zKey;
       layer.setStyle(zoneSelectedStyle);
       try { layer.bringToFront?.(); } catch {}
-      layer.bindPopup(`Zone ${zKey} — PD ${pdKey}`, { closeButton: true }).openPopup();
     }
 
+    // Labels visible when zoomed in
     function updateZoneLabels() {
       const show = map.getZoom() >= ZONE_LABEL_ZOOM;
-      zonesGroup.eachLayer(l => {
-        if (show) l.openTooltip();
-        else l.closeTooltip();
-      });
+      if (show) {
+        if (!map.hasLayer(zonesLabelGroup)) zonesLabelGroup.addTo(map);
+      } else {
+        if (map.hasLayer(zonesLabelGroup)) zonesLabelGroup.remove();
+      }
     }
     map.on('zoomend', updateZoneLabels);
 
-    // public helpers so PD code can notify us
+    // public helpers PD code uses
     window._zonesClear = function _zonesClear() {
       clearZoneSelection();
       zonesGroup.clearLayers();
-      if (map.hasLayer(zonesGroup)) map.removeLayer(zonesGroup);
+      zonesLabelGroup.clearLayers();
+      if (map.hasLayer(zonesGroup)) zonesGroup.remove();
+      if (map.hasLayer(zonesLabelGroup)) zonesLabelGroup.remove();
     };
 
     window._zonesShowFor = function _zonesShowFor(pdKey) {
       if (!zonesEngaged) return;
       const feats = zonesByKey.get(String(pdKey)) || [];
+
       zonesGroup.clearLayers();
+      zonesLabelGroup.clearLayers();
       clearZoneSelection();
 
       feats.forEach(f => {
-        const layer = L.geoJSON(f, { style: zoneBaseStyle }).getLayers()[0];
+        // 1) Polygon layer (interactive for highlight only; never opens popup)
+        const poly = L.geoJSON(f, { style: zoneBaseStyle }).getLayers()[0];
 
-        // zone number label (shown only when zoomed in)
-        const zName = zoneKeyFromProps(f.properties || {});
-        layer.bindTooltip(String(zName), {
-          permanent: true,
-          direction: 'center',
-          className: 'zone-label'
-        });
+        // Click polygon: toggle highlight ONLY (no popup)
+        poly.on('click', () => selectZone(poly, f.properties || {}));
 
-        // click to select/unselect; double-click to clear both Zone & PD
-        layer.on('click', () => selectZone(layer, f.properties || {}, pdKey));
-        layer.on('dblclick', () => {
-          clearZoneSelection();
+        // Double-click polygon: clear zone + PD, and prevent map dblclick zoom
+        poly.on('dblclick', (e) => {
           if (typeof window._pdClearSelection === 'function') window._pdClearSelection();
+          clearZoneSelection();
+          try { poly.closePopup(); } catch {}
+          L.DomEvent.stop(e);
+          if (e.originalEvent?.preventDefault) e.originalEvent.preventDefault();
         });
 
-        layer.addTo(zonesGroup);
+        poly.addTo(zonesGroup);
+
+        // 2) Label marker at polygon center (this opens the popup)
+        const center = poly.getBounds().getCenter();
+        const zName = zoneKeyFromProps(f.properties || {});
+        const labelIcon = L.divIcon({
+          className: 'zone-label',
+          html: String(zName)
+        });
+        const labelMarker = L.marker(center, { icon: labelIcon });
+
+        // Click label: select polygon, then open popup
+        labelMarker.on('click', () => {
+          selectZone(poly, f.properties || {});
+          const content = zonePopupHTML(f.properties || {});
+          poly.bindPopup(content, { closeButton: true }).openPopup(center);
+        });
+
+        // Double-click label: clear both & prevent map dblclick zoom
+        labelMarker.on('dblclick', (e) => {
+          if (typeof window._pdClearSelection === 'function') window._pdClearSelection();
+          clearZoneSelection();
+          try { poly.closePopup(); } catch {}
+          L.DomEvent.stop(e);
+          if (e.originalEvent?.preventDefault) e.originalEvent.preventDefault();
+        });
+
+        labelMarker.addTo(zonesLabelGroup);
       });
 
-      if (!map.hasLayer(zonesGroup) && feats.length) zonesGroup.addTo(map);
+      // Add groups to map & refresh label visibility
+      if (zonesGroup.getLayers().length && !map.hasLayer(zonesGroup)) zonesGroup.addTo(map);
       updateZoneLabels();
     };
 
@@ -385,7 +432,7 @@ fetch(ZONES_URL)
     btnEng.addEventListener('click', () => setMode(true));
     btnDis.addEventListener('click', () => setMode(false));
 
-    // start Disengaged
+    // Start Disengaged
     setMode(false);
   })
   .catch(err => {
