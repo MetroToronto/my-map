@@ -422,7 +422,7 @@ fetch(ZONES_URL)
 
           // Offset popup upward so it doesn't overlap the label:
           const h = (labelMarker._labelSize && labelMarker._labelSize.h) ? labelMarker._labelSize.h : 16;
-          const extra = 3; // <— adjust this (smaller = popup closer to label)
+          const extra = -2; // <— adjust this (smaller = popup closer to label)
           zonePopup.options.offset = L.point(0, -(h + extra));
 
           zonePopup
