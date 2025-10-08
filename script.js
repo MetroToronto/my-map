@@ -430,7 +430,7 @@ fetch(ZONES_URL)
           const content = zonePopupHTML(props);
           const h = (labelMarker._labelSize && labelMarker._labelSize.h) ? labelMarker._labelSize.h : 16;
           const extra = 8; // a little breathing room
-          zonePopup.options.offset = L.point(0, -(h + extra));
+          zonePopup.options.offset = L.point(0, -(h + 3));
 
           zonePopup
             .setLatLng(labelMarker.getLatLng())
