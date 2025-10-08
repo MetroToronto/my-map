@@ -423,7 +423,9 @@ fetch(ZONES_URL)
             poly.setStyle(zoneSelectedStyle);
           }
           const content = zonePopupHTML(props);
-          zonePopup.setLatLng(center).setContent(content).openOn(map);
+          // shift popup upward so the pointer centers under the label box
+          const labelAnchor = L.latLng(center.lat - 0.0005, center.lng);
+          zonePopup.setLatLng(labelAnchor).setContent(content).openOn(map);
           });
 
         // Double-click label: clear both & prevent map dblclick zoom
