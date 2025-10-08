@@ -401,14 +401,17 @@ fetch(ZONES_URL)
         // 2) Label marker at polygon center (this opens the popup)
         const center = poly.getBounds().getCenter();
         const zName = zoneKeyFromProps(f.properties || {});
-        const labelIcon = L.divIcon({
-          className: 'zone-label',
-          html: String(zName)
-        });
-        const labelMarker = L.marker(center, {
-          icon: labelIcon,
-          riseOnHover: true
-        });
+     const labelIcon = L.divIcon({
+        className: 'zone-label',   // our CSS will style this
+        html: String(zName),
+        iconSize: null             // <-- ADD THIS LINE
+      });
+      
+      const labelMarker = L.marker(center, {
+        icon: labelIcon,
+        riseOnHover: true,
+        zIndexOffset: 1000
+      });
 
         // Click label: select polygon, then open reusable popup
         labelMarker.on('click', () => {
