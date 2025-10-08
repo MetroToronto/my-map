@@ -117,21 +117,28 @@ html, body {
   transform: translateY(-12px); /* move label slightly upward */
 }
 
-/* The actual white chip/box we render inside the label icon */
+/* Wrapper that ensures the label sits slightly above its point */
+.zone-label {
+  text-align: center;
+  transform: translateY(-4px); /* small upward adjustment */
+}
+
+/* The white label box for each Planning Zone */
 .zone-tag {
   display: inline-block;
   font-weight: 800;
-  font-size: 14px;
-  line-height: 1.2;
+  font-size: 15px;           /* slightly larger text */
+  line-height: 1.3;
   white-space: nowrap;
 
   background: #fff;
-  border: 1px solid #888;
+  border: 2px solid #000;    /* thicker border for clear visibility */
   border-radius: 6px;
-  padding: 3px 9px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  padding: 3px 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 
   color: #000;
 }
+
 
 }
