@@ -86,6 +86,7 @@ fetch(PD_URL)
         const key  = pdKeyFromProps(p);
         pdIndex.push({ key, name, no: (p.PD_no ?? null), layer, bounds: layer.getBounds() });
 
+        // Toggle on polygon click
         layer.on('click', () => {
           const item = pdIndex.find(i => i.layer === layer);
           if (!item) return;
@@ -241,7 +242,7 @@ let selectedZoneLayer = null;
 const zoneBaseStyle     = { color: '#2166f3', weight: 1, fillOpacity: 0.08 };
 const zoneSelectedStyle = { color: '#0b3aa5', weight: 3, fillOpacity: 0.25 };
 
-// Reusable popup (we’ll move its LatLng when opening)
+// Reusable popup (we open it directly at the label + small offset)
 const zonePopup = L.popup({ closeButton: true, autoPan: true });
 
 fetch(ZONES_URL)
@@ -372,11 +373,11 @@ fetch(ZONES_URL)
         poly.addTo(zonesGroup);
 
         // 2) Label marker (boxed chip) — popup opens only from label click
-        const center   = poly.getBounds().getCenter();
-        const zName    = zoneKeyFromProps(f.properties || {});
+        const center = poly.getBounds().getCenter();
+        const zName  = zoneKeyFromProps(f.properties || {});
         const labelHtml = `<span class="zone-tag">${String(zName)}</span>`;
 
-        // Create with natural size first; measure once in DOM, then center anchor
+        // Create natural-size icon first; measure once in DOM, then center anchor
         let labelIcon = L.divIcon({
           className: 'zone-label',
           html: labelHtml,
@@ -396,7 +397,7 @@ fetch(ZONES_URL)
           const w = el.offsetWidth  || 24;
           const h = el.offsetHeight || 16;
 
-          // stash for popup spacing
+          // (Stored only in case you ever want it; popup offset uses constant below)
           labelMarker._labelSize = { w, h };
 
           const centered = L.divIcon({
@@ -408,7 +409,11 @@ fetch(ZONES_URL)
           labelMarker.setIcon(centered);
         });
 
-        // Label click -> ensure selected, then open popup ABOVE the label.
+        // === POPUP OPEN (guaranteed) ===
+        // A single constant you can tweak to raise/lower the popup:
+        const POPUP_OFFSET_Y = -10; // pixels: negative = above label; try -8, -10, -12
+
+        // Label click -> ensure selected, then open popup at label + small offset
         labelMarker.on('click', () => {
           const props = f.properties || {};
           if (selectedZoneLayer !== poly) {
@@ -418,17 +423,9 @@ fetch(ZONES_URL)
           }
 
           const content = zonePopupHTML(props);
-
-          // === Robust placement: shift popup by pixels in screen space ===
-          const labelH = (labelMarker._labelSize?.h ?? 16);
-          const CLEARANCE_PX = 3; // tweak: larger = higher, smaller/negative = closer
-          const p = map.latLngToLayerPoint(labelMarker.getLatLng());
-          const pShifted = L.point(p.x, p.y - (labelH + CLEARANCE_PX));
-          const targetLatLng = map.layerPointToLatLng(pShifted);
-
-          zonePopup.setOffset(L.point(0, 0));
+          zonePopup.setOffset(L.point(0, POPUP_OFFSET_Y));
           zonePopup
-            .setLatLng(targetLatLng)
+            .setLatLng(labelMarker.getLatLng())
             .setContent(content)
             .openOn(map);
         });
