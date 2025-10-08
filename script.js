@@ -1,4 +1,4 @@
-// ===== Map & basemap =====
+tra// ===== Map & basemap =====
 const map = L.map('map').setView([43.6532, -79.3832], 11);
 
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -429,8 +429,8 @@ fetch(ZONES_URL)
 
           const content = zonePopupHTML(props);
           const h = (labelMarker._labelSize && labelMarker._labelSize.h) ? labelMarker._labelSize.h : 16;
-          const extra = 8; // a little breathing room
-          zonePopup.options.offset = L.point(0, -(h + 3));
+          const extra = 3; // a little breathing room
+          zonePopup.options.offset = L.point(0, -(h + extra));
 
           zonePopup
             .setLatLng(labelMarker.getLatLng())
