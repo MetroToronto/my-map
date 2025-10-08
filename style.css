@@ -114,7 +114,7 @@ html, body {
 /* Label wrapper — positions the tag slightly higher on the map */
 .zone-label {
   text-align: center;
-  transform: translateY(-2px); /* move label slightly upward */
+  transform: translateY(-12px); /* move label slightly upward */
 }
 
 /* The actual white chip/box we render inside the label icon */
