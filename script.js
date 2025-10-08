@@ -401,20 +401,25 @@ fetch(ZONES_URL)
           const w = el.offsetWidth  || 24;
           const h = el.offsetHeight || 16;
         
-          // Positive value moves the label UP relative to its lat/lng (popup stays put)
-          const LABEL_ANCHOR_OFFSET_PX = 10; // try 8–14 to taste
+          // Increase this to move the label UP relative to its lat/lng
+          const LABEL_ANCHOR_OFFSET_PX = 12;  // try 10–16 to taste
         
           labelIcon = L.divIcon({
             className: 'zone-label',
             html: labelHtml,
             iconSize: [w, h],
-            // anchor horizontally centered, vertically shifted down inside the icon
-            // (which moves the whole label UP on the map)
+            // horizontally centered; vertically shifted *down inside the icon*,
+            // which moves the whole label UP on the map
             iconAnchor: [w / 2, h / 2 + LABEL_ANCHOR_OFFSET_PX]
           });
           labelMarker.setIcon(labelIcon);
         });
 
+        const zonePopup = L.popup({
+          closeButton: true,
+          autoPan: true,
+          offset: L.point(0, -3)
+        });
 
         // Click label: ensure selected (if not already), then open popup
         labelMarker.on('click', () => {
