@@ -24,7 +24,6 @@ function pdKeyFromProps(p) {
   return String(p?.PD_name || p?.PD_NAME || p?.name || 'PD').trim();
 }
 function zoneKeyFromProps(p) {
-  // Prefer TTS2022 as the Planning Zone number, then fallbacks
   const cand =
     p?.TTS2022 ?? p?.ZONE ?? p?.ZONE_ID ?? p?.ZN_ID ?? p?.TTS_ZONE ??
     p?.Zone ?? p?.Z_no ?? p?.Z_ID ?? p?.ZONE_NO ?? p?.ZONE_NUM ?? null;
@@ -245,14 +244,14 @@ const ZONE_LABEL_ZOOM = 13; // labels visible at/above this zoom
 let zonesEngaged = false;
 const zonesGroup = L.featureGroup();       // visible zone polygons for current PD
 const zonesLabelGroup = L.featureGroup();  // clickable labels for current PD
-const zonesByKey = new Map();              // PD key -> [GeoJSON Feature, ...]
+const zonesByKey = new Map();              // PD key -> [raw GeoJSON feature, ...]
 let selectedZoneLayer = null;
 let selectedZoneKey = null;
 
 const zoneBaseStyle     = { color: '#2166f3', weight: 1, fillOpacity: 0.08 };
 const zoneSelectedStyle = { color: '#0b3aa5', weight: 3, fillOpacity: 0.25 };
 
-// One reusable popup so polygons never get bound popups
+// one reusable popup so polygons never get bound popups
 const zonePopup = L.popup({ closeButton: true, autoPan: true });
 
 fetch(ZONES_URL)
@@ -321,7 +320,7 @@ fetch(ZONES_URL)
       selectedZoneKey = null;
     }
 
-    // Popup HTML format: bold + underline title, then Reg_name, then PD: PD_no
+    // Popup HTML
     function zonePopupHTML(props) {
       const z = zoneKeyFromProps(props);
       const reg = props?.Reg_name ?? '';
@@ -401,17 +400,16 @@ fetch(ZONES_URL)
         // 2) Label marker at polygon center (this opens the popup)
         const center = poly.getBounds().getCenter();
         const zName = zoneKeyFromProps(f.properties || {});
-     const labelIcon = L.divIcon({
-        className: 'zone-label',   // our CSS will style this
-        html: String(zName),
-        iconSize: null             // <-- ADD THIS LINE
-      });
-      
-      const labelMarker = L.marker(center, {
-        icon: labelIcon,
-        riseOnHover: true,
-        zIndexOffset: 1000
-      });
+        const labelIcon = L.divIcon({
+          className: 'zone-label',                             // CSS styles outer div
+          html: `<span class="zone-tag">${String(zName)}</span>`, // boxed chip inside
+          iconSize: null                                       // let content/CSS size it
+        });
+        const labelMarker = L.marker(center, {
+          icon: labelIcon,
+          riseOnHover: true,
+          zIndexOffset: 1000
+        });
 
         // Click label: select polygon, then open reusable popup
         labelMarker.on('click', () => {
