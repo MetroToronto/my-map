@@ -70,9 +70,7 @@ fetch(PD_URL)
         })
         .openTooltip();
     }
-    function hideLabel() {
-      try { selectedLabel.remove(); } catch {}
-    }
+    function hideLabel() { try { selectedLabel.remove(); } catch {} }
 
     function clearListSelection() {
       document.querySelectorAll('.pd-item.selected').forEach(el => el.classList.remove('selected'));
@@ -254,6 +252,9 @@ let selectedZoneKey = null;
 const zoneBaseStyle     = { color: '#2166f3', weight: 1, fillOpacity: 0.08 };
 const zoneSelectedStyle = { color: '#0b3aa5', weight: 3, fillOpacity: 0.25 };
 
+// One reusable popup so polygons never get bound popups
+const zonePopup = L.popup({ closeButton: true, autoPan: true });
+
 fetch(ZONES_URL)
   .then(r => {
     if (!r.ok) throw new Error(`HTTP ${r.status} for ${r.url || ZONES_URL}`);
@@ -314,7 +315,7 @@ fetch(ZONES_URL)
     function clearZoneSelection() {
       if (selectedZoneLayer) {
         selectedZoneLayer.setStyle(zoneBaseStyle);
-        try { selectedZoneLayer.closePopup(); } catch {}
+        try { selectedZoneLayer.closePopup?.(); } catch {}
       }
       selectedZoneLayer = null;
       selectedZoneKey = null;
@@ -367,6 +368,7 @@ fetch(ZONES_URL)
       zonesLabelGroup.clearLayers();
       if (map.hasLayer(zonesGroup)) zonesGroup.remove();
       if (map.hasLayer(zonesLabelGroup)) zonesLabelGroup.remove();
+      try { zonePopup.remove(); } catch {}
     };
 
     window._zonesShowFor = function _zonesShowFor(pdKey) {
@@ -376,6 +378,7 @@ fetch(ZONES_URL)
       zonesGroup.clearLayers();
       zonesLabelGroup.clearLayers();
       clearZoneSelection();
+      try { zonePopup.remove(); } catch {}
 
       feats.forEach(f => {
         // 1) Polygon layer (interactive for highlight only; never opens popup)
@@ -388,7 +391,7 @@ fetch(ZONES_URL)
         poly.on('dblclick', (e) => {
           if (typeof window._pdClearSelection === 'function') window._pdClearSelection();
           clearZoneSelection();
-          try { poly.closePopup(); } catch {}
+          try { zonePopup.remove(); } catch {}
           L.DomEvent.stop(e);
           if (e.originalEvent?.preventDefault) e.originalEvent.preventDefault();
         });
@@ -402,20 +405,23 @@ fetch(ZONES_URL)
           className: 'zone-label',
           html: String(zName)
         });
-        const labelMarker = L.marker(center, { icon: labelIcon });
+        const labelMarker = L.marker(center, {
+          icon: labelIcon,
+          riseOnHover: true
+        });
 
-        // Click label: select polygon, then open popup
+        // Click label: select polygon, then open reusable popup
         labelMarker.on('click', () => {
           selectZone(poly, f.properties || {});
           const content = zonePopupHTML(f.properties || {});
-          poly.bindPopup(content, { closeButton: true }).openPopup(center);
+          zonePopup.setLatLng(center).setContent(content).openOn(map);
         });
 
         // Double-click label: clear both & prevent map dblclick zoom
         labelMarker.on('dblclick', (e) => {
           if (typeof window._pdClearSelection === 'function') window._pdClearSelection();
           clearZoneSelection();
-          try { poly.closePopup(); } catch {}
+          try { zonePopup.remove(); } catch {}
           L.DomEvent.stop(e);
           if (e.originalEvent?.preventDefault) e.originalEvent.preventDefault();
         });
