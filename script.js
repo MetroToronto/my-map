@@ -411,12 +411,20 @@ fetch(ZONES_URL)
           zIndexOffset: 1000
         });
 
-        // Click label: select polygon, then open reusable popup
+        // Click label: ensure selected (if not already), then open popup.
+        // IMPORTANT: do NOT toggle off when already selected.
         labelMarker.on('click', () => {
-          selectZone(poly, f.properties || {});
-          const content = zonePopupHTML(f.properties || {});
+          const props = f.properties || {};
+          if (selectedZoneLayer !== poly) {
+            // only select if it's not already selected
+            selectZone(poly, props);
+          } else {
+            // make sure style stays in the selected style
+            poly.setStyle(zoneSelectedStyle);
+          }
+          const content = zonePopupHTML(props);
           zonePopup.setLatLng(center).setContent(content).openOn(map);
-        });
+          });
 
         // Double-click label: clear both & prevent map dblclick zoom
         labelMarker.on('dblclick', (e) => {
