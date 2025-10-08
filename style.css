@@ -111,18 +111,27 @@ html, body {
   pointer-events: auto;      /* label must be clickable */
 }
 
-/* the actual chip/box we render inside the icon */
+/* Label wrapper — positions the tag slightly higher on the map */
+.zone-label {
+  text-align: center;
+  transform: translateY(-8px); /* move label slightly upward */
+}
+
+/* The actual white chip/box we render inside the label icon */
 .zone-tag {
   display: inline-block;
   font-weight: 800;
-  font-size: 14px;           /* adjust if you want larger */
+  font-size: 14px;
   line-height: 1.2;
   white-space: nowrap;
 
   background: #fff;
-  border: 1px solid #999;
-  border-radius: 4px;
-  padding: 2px 8px;
-  box-shadow: 0 1px 2px rgba(0,0,0,.25);
+  border: 1px solid #888;
+  border-radius: 6px;
+  padding: 3px 9px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+
+  color: #000;
 }
+
 }
