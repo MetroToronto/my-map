@@ -420,13 +420,23 @@ fetch(ZONES_URL)
 
           const content = zonePopupHTML(props);
 
-          // Offset popup upward so it doesn't overlap the label:
-          const h = (labelMarker._labelSize && labelMarker._labelSize.h) ? labelMarker._labelSize.h : 16;
-          const extra = -2; // <— adjust this (smaller = popup closer to label)
-          zonePopup.options.offset = L.point(0, -(h + extra));
-
+          // 1) Compute pixel distance to move the popup upward from the label
+          const labelH = (labelMarker._labelSize?.h ?? 16);
+          
+          // Tune this single number ↓ to raise/lower the popup relative to the label.
+          // Positive makes popup HIGHER; smaller/negative makes it CLOSER/OVER the label.
+          const CLEARANCE_PX = 2;   // try 8, 4, 2, 0, or even -2 to sit closer
+          
+          // 2) Convert that pixel clearance into a LatLng target
+          const p = map.latLngToLayerPoint(labelMarker.getLatLng());
+          const pShifted = L.point(p.x, p.y - (labelH + CLEARANCE_PX));
+          const targetLatLng = map.layerPointToLatLng(pShifted);
+          
+          // 3) (Optional) also set the popup's internal pixel offset to keep the arrow aligned
+          zonePopup.setOffset(L.point(0, 0));  // zero since we shifted the LatLng itself
+          
           zonePopup
-            .setLatLng(labelMarker.getLatLng())
+            .setLatLng(targetLatLng)
             .setContent(content)
             .openOn(map);
         });
