@@ -55,9 +55,9 @@ fetch(PD_URL)
 
     let selectedKey = null;
     let selectedItem = null;
-    const selectedLabel = L.marker([0,0], { opacity: 0 });
+    const selectedLabel = L.marker([0,0], { opacity: 0 }); // invisible anchor
 
-    function showLabel(item) {
+    function showPDLabel(item) {
       const center = item.bounds.getCenter();
       if (!map.hasLayer(selectedLabel)) selectedLabel.addTo(map);
       selectedLabel
@@ -69,7 +69,7 @@ fetch(PD_URL)
         })
         .openTooltip();
     }
-    function hideLabel() { try { selectedLabel.remove(); } catch {} }
+    function hidePDLabel() { try { selectedLabel.remove(); } catch {} }
 
     function clearListSelection() {
       document.querySelectorAll('.pd-item.selected').forEach(el => el.classList.remove('selected'));
@@ -80,7 +80,7 @@ fetch(PD_URL)
       if (cbx) cbx.closest('.pd-item')?.classList.add('selected');
     }
 
-    const pdIndex = [];
+    const pdIndex = []; // { key, name, no, layer, bounds }
     L.geoJSON(geo, {
       style: baseStyle,
       onEachFeature: (feature, layer) => {
@@ -89,18 +89,17 @@ fetch(PD_URL)
         const key  = pdKeyFromProps(p);
         pdIndex.push({ key, name, no: (p.PD_no ?? null), layer, bounds: layer.getBounds() });
 
+        // Toggle on polygon click
         layer.on('click', () => {
           const item = pdIndex.find(i => i.layer === layer);
           if (!item) return;
-          if (selectedKey === item.key) {
-            clearSelection();
-          } else {
-            selectItem(item, { zoom: true });
-          }
+          if (selectedKey === item.key) clearPDSelection();
+          else selectPD(item, { zoom: true });
         });
       }
     });
 
+    // Sort by number then name
     pdIndex.sort((a,b) => {
       const ah = a.no !== null, bh = b.no !== null;
       if (ah && bh) return Number(a.no) - Number(b.no);
@@ -113,23 +112,23 @@ fetch(PD_URL)
     const hide  = i => { if (map.hasLayer(i.layer))  group.removeLayer(i.layer); };
     const reset = () => { pdIndex.forEach(i => i.layer.setStyle(baseStyle)); };
 
-    function clearSelection() {
+    function clearPDSelection() {
       reset();
-      hideLabel();
+      hidePDLabel();
       map.closePopup();
       clearListSelection();
       selectedKey = null;
       selectedItem = null;
       if (typeof window._zonesClear === 'function') window._zonesClear();
     }
-    window._pdClearSelection = clearSelection;
+    window._pdClearSelection = clearPDSelection; // for zones dblclick
 
-    function selectItem(item, { zoom = false } = {}) {
+    function selectPD(item, { zoom = false } = {}) {
       if (!map.hasLayer(item.layer)) item.layer.addTo(group);
       reset();
       item.layer.setStyle(selectedStyle);
       try { item.layer.bringToFront?.(); } catch {}
-      showLabel(item);
+      showPDLabel(item);
       if (zoom) map.fitBounds(item.bounds, { padding: [30,30] });
       selectedKey = item.key;
       selectedItem = item;
@@ -137,6 +136,7 @@ fetch(PD_URL)
       if (typeof window._zonesShowFor === 'function') window._zonesShowFor(item.key);
     }
 
+    // Build the checkbox list UI
     const itemsHTML = pdIndex.map(i => `
       <div class="pd-item">
         <input type="checkbox" class="pd-cbx" id="pd-${encodeURIComponent(i.key)}"
@@ -145,6 +145,7 @@ fetch(PD_URL)
       </div>
     `).join('');
 
+    // ---- PD Control (top-right, under geocoder) ----
     const PDControl = L.Control.extend({
       options: { position: 'topright' },
       onAdd: function () {
@@ -160,6 +161,7 @@ fetch(PD_URL)
           </div>
           <div class="pd-list" id="pd-list">${itemsHTML}</div>
         `;
+        // match geocoder width
         const geocoderEl = document.querySelector('.leaflet-control-geocoder');
         if (geocoderEl) div.style.width = geocoderEl.offsetWidth + 'px';
         L.DomEvent.disableClickPropagation(div);
@@ -169,15 +171,20 @@ fetch(PD_URL)
     });
     map.addControl(new PDControl());
 
+    // Elements
     const listEl = document.getElementById('pd-list');
     const btnAll = document.getElementById('pd-select-all');
     const btnClr = document.getElementById('pd-clear-all');
     const btnTgl = document.getElementById('pd-toggle');
     const controlRoot = listEl.closest('.pd-control');
 
+    // Initially show all PDs and fit
     pdIndex.forEach(show);
-    try { map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20,20] }); } catch {}
+    try {
+      map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20,20] });
+    } catch {}
 
+    // Checkbox toggles visibility; if hiding selected, clear selection
     listEl.addEventListener('change', e => {
       const cbx = e.target.closest('.pd-cbx');
       if (!cbx) return;
@@ -187,31 +194,36 @@ fetch(PD_URL)
       if (cbx.checked) show(item);
       else {
         hide(item);
-        if (selectedKey === key) clearSelection();
+        if (selectedKey === key) clearPDSelection();
       }
     });
 
+    // Click PD NAME in the list -> toggle selection
     listEl.addEventListener('click', e => {
       const nameEl = e.target.closest('.pd-name');
       if (!nameEl) return;
       const key = decodeURIComponent(nameEl.dataset.key);
       const item = pdIndex.find(i => i.key === key);
       if (!item) return;
+      // ensure visible
       const cbx = document.getElementById(`pd-${encodeURIComponent(key)}`);
       if (cbx && !cbx.checked) { cbx.checked = true; show(item); }
-      if (selectedKey === key) clearSelection();
-      else selectItem(item, { zoom: true });
+      if (selectedKey === key) clearPDSelection();
+      else selectPD(item, { zoom: true });
     });
 
+    // Buttons
     btnAll.addEventListener('click', () => {
       document.querySelectorAll('.pd-cbx').forEach(c => c.checked = true);
       pdIndex.forEach(show);
-      try { map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20,20] }); } catch {}
+      try {
+        map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20,20] });
+      } catch {}
     });
     btnClr.addEventListener('click', () => {
       document.querySelectorAll('.pd-cbx').forEach(c => c.checked = false);
       pdIndex.forEach(hide);
-      clearSelection();
+      clearPDSelection();
     });
     btnTgl.addEventListener('click', () => {
       const collapsed = controlRoot.classList.toggle('collapsed');
@@ -224,22 +236,21 @@ fetch(PD_URL)
   });
 
 /* -------------------------------------------------------
-   Planning Zones (interactive; label-only popup; centered anchor)
+   Planning Zones (interactive; label-only popup; centered + lifted)
 --------------------------------------------------------*/
 const ZONES_URL = 'data/tts_zones.json?v=' + Date.now();
 const ZONE_LABEL_ZOOM = 13;
 
 let zonesEngaged = false;
-const zonesGroup = L.featureGroup();
-const zonesLabelGroup = L.featureGroup();
-const zonesByKey = new Map();
+const zonesGroup = L.featureGroup();       // visible polygons for current PD
+const zonesLabelGroup = L.featureGroup();  // clickable labels for current PD
+const zonesByKey = new Map();              // PD key -> [raw feature,...]
 let selectedZoneLayer = null;
-let selectedZoneKey = null;
 
 const zoneBaseStyle     = { color: '#2166f3', weight: 1, fillOpacity: 0.08 };
 const zoneSelectedStyle = { color: '#0b3aa5', weight: 3, fillOpacity: 0.25 };
 
-// one reusable popup so polygons never get bound popups
+// Reusable popup; we’ll change its offset dynamically when opening
 const zonePopup = L.popup({ closeButton: true, autoPan: true });
 
 fetch(ZONES_URL)
@@ -255,7 +266,7 @@ fetch(ZONES_URL)
     }
   })
   .then(zGeo => {
-    // Index zone features by PD key (store raw features; build layers on-demand)
+    // Index features by PD key (store raw features; build layers on-demand)
     L.geoJSON(zGeo, {
       onEachFeature: (f) => {
         const pdKey = pdKeyFromProps(f.properties || {});
@@ -296,15 +307,13 @@ fetch(ZONES_URL)
       btnEng.classList.toggle('active', engaged);
       btnDis.classList.toggle('active', !engaged);
       if (!engaged) _zonesClear();
+      // when engaging, PD selection will trigger _zonesShowFor
     }
 
     function clearZoneSelection() {
-      if (selectedZoneLayer) {
-        selectedZoneLayer.setStyle(zoneBaseStyle);
-        try { selectedZoneLayer.closePopup?.(); } catch {}
-      }
+      if (selectedZoneLayer) selectedZoneLayer.setStyle(zoneBaseStyle);
       selectedZoneLayer = null;
-      selectedZoneKey = null;
+      try { zonePopup.remove(); } catch {}
     }
 
     function zonePopupHTML(props) {
@@ -321,14 +330,12 @@ fetch(ZONES_URL)
     }
 
     function selectZone(layer, props) {
-      const zKey = zoneKeyFromProps(props);
       if (selectedZoneLayer === layer) { // toggle off
         clearZoneSelection();
         return;
       }
       if (selectedZoneLayer) selectedZoneLayer.setStyle(zoneBaseStyle);
       selectedZoneLayer = layer;
-      selectedZoneKey = zKey;
       layer.setStyle(zoneSelectedStyle);
       try { layer.bringToFront?.(); } catch {}
     }
@@ -343,14 +350,13 @@ fetch(ZONES_URL)
     }
     map.on('zoomend', updateZoneLabels);
 
-    // public helpers used by PD code
+    // public helpers PD code uses
     window._zonesClear = function _zonesClear() {
       clearZoneSelection();
       zonesGroup.clearLayers();
       zonesLabelGroup.clearLayers();
       if (map.hasLayer(zonesGroup)) zonesGroup.remove();
       if (map.hasLayer(zonesLabelGroup)) zonesLabelGroup.remove();
-      try { zonePopup.remove(); } catch {}
     };
 
     window._zonesShowFor = function _zonesShowFor(pdKey) {
@@ -360,68 +366,59 @@ fetch(ZONES_URL)
       zonesGroup.clearLayers();
       zonesLabelGroup.clearLayers();
       clearZoneSelection();
-      try { zonePopup.remove(); } catch {}
 
       feats.forEach(f => {
-        // 1) polygon layer (highlight only; never opens popup)
+        // 1) Polygon layer (interactive for highlight only; never opens popup)
         const poly = L.geoJSON(f, { style: zoneBaseStyle }).getLayers()[0];
 
         poly.on('click', () => selectZone(poly, f.properties || {}));
-
         poly.on('dblclick', (e) => {
           if (typeof window._pdClearSelection === 'function') window._pdClearSelection();
           clearZoneSelection();
-          try { zonePopup.remove(); } catch {}
           L.DomEvent.stop(e);
           if (e.originalEvent?.preventDefault) e.originalEvent.preventDefault();
         });
 
         poly.addTo(zonesGroup);
 
-        // 2) label marker (boxed chip) — popup opens only from label
+        // 2) Label marker at polygon center (boxed chip that opens the popup)
         const center = poly.getBounds().getCenter();
         const zName = zoneKeyFromProps(f.properties || {});
         const labelHtml = `<span class="zone-tag">${String(zName)}</span>`;
 
-        // initial icon: natural size so we can measure it; then re-anchor to center
+        // First icon: natural size; after it's in the DOM we measure & re-anchor
         let labelIcon = L.divIcon({
           className: 'zone-label',
           html: labelHtml,
           iconSize: null
         });
+
         const labelMarker = L.marker(center, {
           icon: labelIcon,
           riseOnHover: true,
           zIndexOffset: 1000
         });
 
+        // Measure the label size and re-center the icon anchor
         labelMarker.once('add', () => {
           const el = labelMarker.getElement();
           if (!el) return;
           const w = el.offsetWidth  || 24;
           const h = el.offsetHeight || 16;
-        
-          // Increase this to move the label UP relative to its lat/lng
-          const LABEL_ANCHOR_OFFSET_PX = 12;  // try 10–16 to taste
-        
-          labelIcon = L.divIcon({
+
+          // Save for popup offset later
+          labelMarker._labelSize = { w, h };
+
+          const centeredIcon = L.divIcon({
             className: 'zone-label',
             html: labelHtml,
             iconSize: [w, h],
-            // horizontally centered; vertically shifted *down inside the icon*,
-            // which moves the whole label UP on the map
-            iconAnchor: [w / 2, h / 2 + LABEL_ANCHOR_OFFSET_PX]
+            iconAnchor: [w / 2, h / 2] // true center of the chip
           });
-          labelMarker.setIcon(labelIcon);
+          labelMarker.setIcon(centeredIcon);
         });
 
-        const zonePopup = L.popup({
-          closeButton: true,
-          autoPan: true,
-          offset: L.point(0, -3)
-        });
-
-        // Click label: ensure selected (if not already), then open popup
+        // Click label: ensure selected (no toggle-off), then open popup ABOVE label
         labelMarker.on('click', () => {
           const props = f.properties || {};
           if (selectedZoneLayer !== poly) {
@@ -429,8 +426,16 @@ fetch(ZONES_URL)
           } else {
             poly.setStyle(zoneSelectedStyle);
           }
+
           const content = zonePopupHTML(props);
-          zonePopup.setLatLng(labelMarker.getLatLng()).setContent(content).openOn(map);
+          const h = (labelMarker._labelSize && labelMarker._labelSize.h) ? labelMarker._labelSize.h : 16;
+          const extra = 8; // a little breathing room
+          zonePopup.options.offset = L.point(0, -(h + extra));
+
+          zonePopup
+            .setLatLng(labelMarker.getLatLng())
+            .setContent(content)
+            .openOn(map);
         });
 
         // Double-click label: clear both & prevent map dblclick zoom
@@ -449,10 +454,12 @@ fetch(ZONES_URL)
       updateZoneLabels();
     };
 
+    // Buttons
     btnEng.addEventListener('click', () => setMode(true));
     btnDis.addEventListener('click', () => setMode(false));
 
-    setMode(false); // start disengaged
+    // Start Disengaged
+    setMode(false);
   })
   .catch(err => {
     console.error('Failed to load Planning Zones:', err);
