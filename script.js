@@ -226,7 +226,6 @@ fetch(PD_URL)
       btnTgl.textContent = collapsed ? 'Expand ▾' : 'Collapse ▴';
     });
     
-    // <<< Paste the zoom handler here (still inside the same .then block) >>>
     const PD_LABEL_HIDE_ZOOM = 14;
     map.on('zoomend', () => {
       const zoom = map.getZoom();
