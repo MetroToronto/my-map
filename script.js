@@ -228,25 +228,29 @@ fetch(PD_URL)
     alert('Could not load PDs. See console for details.');
   });
 
-btnTgl.addEventListener('click', () => {
-  const collapsed = controlRoot.classList.toggle('collapsed');
-  btnTgl.textContent = collapsed ? 'Expand ▼' : 'Collapse ▲';
-});
-})
-.catch(err => {
-  console.error('Failed to load PDs:', err);
-  alert('Could not load PDs. See console for details.');
-});
+  // ...btnAll / btnClr / btnTgl listeners...
 
-// --- Hide PD label when zoomed in close ---
-map.on('zoomend', () => {
-  const zoom = map.getZoom();
-  if (zoom >= 14) {  // hides PD label when zoomed in to see zones
-    if (map.hasLayer(selectedLabel)) selectedLabel.remove();
-  } else {
-    if (selectedItem && !map.hasLayer(selectedLabel)) showPDLabel(selectedItem);
-  }
-});
+  btnTgl.addEventListener('click', () => {
+    const collapsed = controlRoot.classList.toggle('collapsed');
+    btnTgl.textContent = collapsed ? 'Expand ▾' : 'Collapse ▴';
+  });
+  
+  // <<< Paste the zoom handler here (still inside the same .then block) >>>
+  const PD_LABEL_HIDE_ZOOM = 14;
+  map.on('zoomend', () => {
+    const zoom = map.getZoom();
+    if (zoom >= PD_LABEL_HIDE_ZOOM) {
+      if (map.hasLayer(selectedLabel)) selectedLabel.remove();
+    } else {
+      if (selectedItem && !map.hasLayer(selectedLabel)) showPDLabel(selectedItem);
+    }
+  });
+  
+  // then this .catch stays OUTSIDE:
+  }).catch(err => {
+    console.error('Failed to load PDs:', err);
+    alert('Could not load PDs. See console for details.');
+  });
 
 // ===================== Planning Zones =====================
 const ZONES_URL = 'data/tts_zones.json?v=' + Date.now();
