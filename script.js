@@ -86,7 +86,6 @@ fetch(PD_URL)
         const key  = pdKeyFromProps(p);
         pdIndex.push({ key, name, no: (p.PD_no ?? null), layer, bounds: layer.getBounds() });
 
-        // Toggle on polygon click
         layer.on('click', () => {
           const item = pdIndex.find(i => i.layer === layer);
           if (!item) return;
@@ -242,8 +241,7 @@ let selectedZoneLayer = null;
 const zoneBaseStyle     = { color: '#2166f3', weight: 1, fillOpacity: 0.08 };
 const zoneSelectedStyle = { color: '#0b3aa5', weight: 3, fillOpacity: 0.25 };
 
-// Reusable popup (we open it directly at the label + small offset)
-const zonePopup = L.popup({ closeButton: true, autoPan: true });
+// NOTE: we DON'T reuse a global popup anymore. We bind a popup to each label on click.
 
 fetch(ZONES_URL)
   .then(r => {
@@ -304,7 +302,7 @@ fetch(ZONES_URL)
     function clearZoneSelection() {
       if (selectedZoneLayer) selectedZoneLayer.setStyle(zoneBaseStyle);
       selectedZoneLayer = null;
-      try { zonePopup.remove(); } catch {}
+      try { map.closePopup(); } catch {}
     }
 
     function zonePopupHTML(props) {
@@ -348,6 +346,7 @@ fetch(ZONES_URL)
       zonesLabelGroup.clearLayers();
       if (map.hasLayer(zonesGroup))      zonesGroup.remove();
       if (map.hasLayer(zonesLabelGroup)) zonesLabelGroup.remove();
+      try { map.closePopup(); } catch {}
     };
 
     window._zonesShowFor = function _zonesShowFor(pdKey) {
@@ -397,9 +396,6 @@ fetch(ZONES_URL)
           const w = el.offsetWidth  || 24;
           const h = el.offsetHeight || 16;
 
-          // (Stored only in case you ever want it; popup offset uses constant below)
-          labelMarker._labelSize = { w, h };
-
           const centered = L.divIcon({
             className: 'zone-label',
             html: labelHtml,
@@ -410,7 +406,6 @@ fetch(ZONES_URL)
         });
 
         // === POPUP OPEN (guaranteed) ===
-        // A single constant you can tweak to raise/lower the popup:
         const POPUP_OFFSET_Y = -10; // pixels: negative = above label; try -8, -10, -12
 
         // Label click -> ensure selected, then open popup at label + small offset
@@ -423,18 +418,26 @@ fetch(ZONES_URL)
           }
 
           const content = zonePopupHTML(props);
-          zonePopup.setOffset(L.point(0, POPUP_OFFSET_Y));
-          zonePopup
-            .setLatLng(labelMarker.getLatLng())
-            .setContent(content)
-            .openOn(map);
+
+          // Rebind a fresh popup to THIS label, then open
+          try { labelMarker.unbindPopup(); } catch {}
+          labelMarker
+            .bindPopup(content, {
+              offset: L.point(0, POPUP_OFFSET_Y),
+              autoPan: true,
+              closeButton: true,
+              keepInView: false,
+              maxWidth: 280,
+              className: 'zone-popup'
+            })
+            .openPopup();
         });
 
         // Double-click label -> clear both & stop map dblclick zoom
         labelMarker.on('dblclick', (e) => {
           if (typeof window._pdClearSelection === 'function') window._pdClearSelection();
           clearZoneSelection();
-          try { zonePopup.remove(); } catch {}
+          try { labelMarker.closePopup(); } catch {}
           L.DomEvent.stop(e);
           if (e.originalEvent?.preventDefault) e.originalEvent.preventDefault();
         });
