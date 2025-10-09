@@ -230,7 +230,7 @@ fetch(PD_URL)
 
 // ===================== Planning Zones =====================
 const ZONES_URL = 'data/tts_zones.json?v=' + Date.now();
-const ZONE_LABEL_ZOOM = 13;
+const ZONE_LABEL_ZOOM = 15;
 
 let zonesEngaged = false;
 const zonesGroup      = L.featureGroup(); // polygons for current PD
