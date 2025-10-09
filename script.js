@@ -44,8 +44,8 @@ fetch(PD_URL)
     }
   })
   .then(geo => {
-    const baseStyle     = { color: '#ff6600', weight: 1, fillOpacity: 0.15 };
-    const selectedStyle = { color: '#d40000', weight: 3, fillOpacity: 0.25 };
+    const baseStyle     = { color: '#ff6600', weight: 2, fillOpacity: 0.15 };
+    const selectedStyle = { color: '#d40000', weight: 4, fillOpacity: 0.25 };
 
     const group = L.featureGroup().addTo(map);
 
