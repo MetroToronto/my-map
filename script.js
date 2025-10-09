@@ -311,7 +311,7 @@ fetch(ZONES_URL)
       const pdn = props?.PD_no ?? props?.pd_no ?? '';
       return `
         <div>
-          <strong><u>TTS2022 Planning Zone ${z}</u></strong><br/>
+          <strong><u>Planning Zone ${z}</u></strong><br/>
           ${reg}<br/>
           PD: ${pdn}
         </div>
