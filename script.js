@@ -28,6 +28,11 @@ function zoneKeyFromProps(p) {
   return String(cand ?? 'Zone').trim();
 }
 
+// Exposed later by PD/Zones sections:
+window._pdSelectByKey  = undefined; // (key, {zoom}) -> void
+window._zonesShowFor   = undefined; // (pdKey, focusZoneId?) -> void
+window._zonesClear     = undefined; // () -> void
+
 // ===================== Planning Districts =====================
 const PD_URL = 'data/tts_pds.json?v=' + Date.now();
 
@@ -132,6 +137,12 @@ fetch(PD_URL)
       if (typeof window._zonesShowFor === 'function') window._zonesShowFor(item.key);
     }
 
+    // Expose PD select-by-key for Zone Search to call
+    window._pdSelectByKey = function _pdSelectByKey(key, { zoom = true } = {}) {
+      const item = pdIndex.find(i => String(i.key) === String(key));
+      if (item) selectPD(item, { zoom });
+    };
+
     // Build the PD list UI
     const itemsHTML = pdIndex.map(i => `
       <div class="pd-item">
@@ -218,14 +229,12 @@ fetch(PD_URL)
       pdIndex.forEach(hide);
       clearPDSelection();
     });
-  
-    // ...btnAll / btnClr / btnTgl listeners...
-  
+
     btnTgl.addEventListener('click', () => {
       const collapsed = controlRoot.classList.toggle('collapsed');
       btnTgl.textContent = collapsed ? 'Expand ▾' : 'Collapse ▴';
     });
-    
+
     const PD_LABEL_HIDE_ZOOM = 14;
     map.on('zoomend', () => {
       const zoom = map.getZoom();
@@ -235,8 +244,7 @@ fetch(PD_URL)
         if (selectedItem && !map.hasLayer(selectedLabel)) showPDLabel(selectedItem);
       }
     });
-  
-  // then this .catch stays OUTSIDE:
+
   }).catch(err => {
     console.error('Failed to load PDs:', err);
     alert('Could not load PDs. See console for details.');
@@ -250,12 +258,11 @@ let zonesEngaged = false;
 const zonesGroup      = L.featureGroup(); // polygons for current PD
 const zonesLabelGroup = L.featureGroup(); // label markers for current PD
 const zonesByKey      = new Map();        // PD key -> [raw feature,...]
+const zoneLookup      = new Map();        // zoneId (string) -> {feature, pdKey}
 let selectedZoneLayer = null;
 
 const zoneBaseStyle     = { color: '#2166f3', weight: 2, fillOpacity: 0.08 };
 const zoneSelectedStyle = { color: '#0b3aa5', weight: 4, fillOpacity: 0.25 };
-
-// NOTE: we DON'T reuse a global popup anymore. We bind a popup to each label on click.
 
 fetch(ZONES_URL)
   .then(r => {
@@ -270,18 +277,34 @@ fetch(ZONES_URL)
     }
   })
   .then(zGeo => {
-    // Index zones by PD
+    // Index zones by PD and build zoneLookup for search
+    const suggestions = [];
     L.geoJSON(zGeo, {
       onEachFeature: f => {
-        const pd = pdKeyFromProps(f.properties || {});
-        const key = String(pd || '').trim();
-        if (!key) return;
-        if (!zonesByKey.has(key)) zonesByKey.set(key, []);
-        zonesByKey.get(key).push(f);
+        const props = f.properties || {};
+        const pdKey = pdKeyFromProps(props);
+        if (!pdKey) return;
+
+        if (!zonesByKey.has(pdKey)) zonesByKey.set(pdKey, []);
+        zonesByKey.get(pdKey).push(f);
+
+        const zId = zoneKeyFromProps(props);
+        if (!zoneLookup.has(String(zId))) {
+          zoneLookup.set(String(zId), { feature: f, pdKey });
+          const reg = props?.Reg_name ?? '';
+          const pdn = props?.PD_no ?? props?.pd_no ?? '';
+          suggestions.push({ z: String(zId), pd: String(pdn), reg: String(reg) });
+        }
       }
     });
 
-    // Zones control (Engage / Disengage)
+    // Build datalist HTML once
+    suggestions.sort((a,b) => Number(a.z) - Number(b.z));
+    const datalistHTML = suggestions.map(s =>
+      `<option value="${s.z} — PD ${s.pd} — ${s.reg}"></option>`
+    ).join('');
+
+    // Zones control (Engage / Disengage) + Zone Search UI
     const ZonesControl = L.Control.extend({
       options: { position: 'topright' },
       onAdd: function () {
@@ -294,6 +317,11 @@ fetch(ZONES_URL)
               <button type="button" id="pz-disengage">Disengage</button>
             </div>
           </div>
+          <div class="pz-search">
+            <input id="pz-search-input" type="text" placeholder="Search zone # (e.g., 1593)" list="pz-suggest">
+            <datalist id="pz-suggest">${datalistHTML}</datalist>
+            <button type="button" id="pz-search-go">Go</button>
+          </div>
         `;
         const geocoderEl = document.querySelector('.leaflet-control-geocoder');
         if (geocoderEl) div.style.width = geocoderEl.offsetWidth + 'px';
@@ -303,8 +331,10 @@ fetch(ZONES_URL)
     });
     map.addControl(new ZonesControl());
 
-    const btnEng = document.getElementById('pz-engage');
-    const btnDis = document.getElementById('pz-disengage');
+    const btnEng   = document.getElementById('pz-engage');
+    const btnDis   = document.getElementById('pz-disengage');
+    const inpZone  = document.getElementById('pz-search-input');
+    const btnGo    = document.getElementById('pz-search-go');
 
     function setMode(engaged) {
       zonesEngaged = engaged;
@@ -332,11 +362,8 @@ fetch(ZONES_URL)
       `;
     }
 
-    function selectZone(layer, props) {
-      if (selectedZoneLayer === layer) {
-        clearZoneSelection(); // toggle off
-        return;
-      }
+    function selectZone(layer) {
+      if (selectedZoneLayer === layer) { clearZoneSelection(); return; }
       if (selectedZoneLayer) selectedZoneLayer.setStyle(zoneBaseStyle);
       selectedZoneLayer = layer;
       layer.setStyle(zoneSelectedStyle);
@@ -363,7 +390,8 @@ fetch(ZONES_URL)
       try { map.closePopup(); } catch {}
     };
 
-    window._zonesShowFor = function _zonesShowFor(pdKey) {
+    // Optional focusZoneId triggers highlight + popup after draw
+    window._zonesShowFor = function _zonesShowFor(pdKey, focusZoneId = null) {
       if (!zonesEngaged) return;
       const feats = zonesByKey.get(String(pdKey)) || [];
 
@@ -371,11 +399,14 @@ fetch(ZONES_URL)
       zonesLabelGroup.clearLayers();
       clearZoneSelection();
 
+      // we may need to click-open this label later
+      let pendingOpen = null;
+
       feats.forEach(f => {
         // 1) Polygon (highlight only; popup never opens from polygon)
         const poly = L.geoJSON(f, { style: zoneBaseStyle }).getLayers()[0];
 
-        poly.on('click', () => selectZone(poly, f.properties || {}));
+        poly.on('click', () => selectZone(poly));
         poly.on('dblclick', (e) => {
           if (typeof window._pdClearSelection === 'function') window._pdClearSelection();
           clearZoneSelection();
@@ -409,31 +440,24 @@ fetch(ZONES_URL)
           if (!el) return;
           const w = el.offsetWidth  || 24;
           const h = el.offsetHeight || 16;
-
           const centered = L.divIcon({
             className: 'zone-label',
             html: labelHtml,
             iconSize: [w, h],
-            iconAnchor: [w / 2, h / 2] // true visual center
+            iconAnchor: [w / 2, h / 2]
           });
           labelMarker.setIcon(centered);
         });
 
-        // === POPUP OPEN (guaranteed) ===
-        const POPUP_OFFSET_Y = -10; // pixels: negative = above label; try -8, -10, -12
+        const POPUP_OFFSET_Y = -10;
 
         // Label click -> ensure selected, then open popup at label + small offset
         labelMarker.on('click', () => {
           const props = f.properties || {};
-          if (selectedZoneLayer !== poly) {
-            selectZone(poly, props);
-          } else {
-            poly.setStyle(zoneSelectedStyle);
-          }
+          if (selectedZoneLayer !== poly) selectZone(poly);
+          else poly.setStyle(zoneSelectedStyle);
 
           const content = zonePopupHTML(props);
-
-          // Rebind a fresh popup to THIS label, then open
           try { labelMarker.unbindPopup(); } catch {}
           labelMarker
             .bindPopup(content, {
@@ -456,12 +480,57 @@ fetch(ZONES_URL)
           if (e.originalEvent?.preventDefault) e.originalEvent.preventDefault();
         });
 
+        // If this is the target zone, remember to open its label after layers mount
+        if (focusZoneId && String(zName) === String(focusZoneId)) {
+          pendingOpen = () => labelMarker.fire('click');
+          // pre-select its polygon style
+          selectZone(poly);
+        }
+
         labelMarker.addTo(zonesLabelGroup);
       });
 
       if (zonesGroup.getLayers().length && !map.hasLayer(zonesGroup)) zonesGroup.addTo(map);
       updateZoneLabels();
+
+      // open the target popup (after labels are on map)
+      if (pendingOpen) setTimeout(pendingOpen, 0);
     };
+
+    // -------- Zone Search handlers --------
+    function parseZoneId(raw) {
+      if (!raw) return null;
+      const m = String(raw).match(/\d+/); // first number in the field
+      return m ? m[0] : null;
+    }
+
+    function runZoneSearch() {
+      const zId = parseZoneId(inpZone.value);
+      if (!zId) return;
+
+      // Look up zone → PD
+      const found = zoneLookup.get(String(zId));
+      if (!found) return;
+
+      // Ensure engaged
+      if (!zonesEngaged) setMode(true);
+
+      // Select PD (zooms to PD), then draw zones with focus on zId
+      const { pdKey } = found;
+      if (typeof window._pdSelectByKey === 'function') {
+        window._pdSelectByKey(pdKey, { zoom: true });
+      }
+      // When PD selection calls _zonesShowFor, it will draw without focus.
+      // Call again with focus to guarantee highlight + popup.
+      if (typeof window._zonesShowFor === 'function') {
+        window._zonesShowFor(pdKey, String(zId));
+      }
+    }
+
+    inpZone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { runZoneSearch(); }
+    });
+    btnGo.addEventListener('click', runZoneSearch);
 
     // Start disengaged; buttons toggle mode
     btnEng.addEventListener('click', () => setMode(true));
