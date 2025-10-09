@@ -252,8 +252,8 @@ const zonesLabelGroup = L.featureGroup(); // label markers for current PD
 const zonesByKey      = new Map();        // PD key -> [raw feature,...]
 let selectedZoneLayer = null;
 
-const zoneBaseStyle     = { color: '#2166f3', weight: 1, fillOpacity: 0.08 };
-const zoneSelectedStyle = { color: '#0b3aa5', weight: 3, fillOpacity: 0.25 };
+const zoneBaseStyle     = { color: '#2166f3', weight: 2, fillOpacity: 0.08 };
+const zoneSelectedStyle = { color: '#0b3aa5', weight: 4, fillOpacity: 0.25 };
 
 // NOTE: we DON'T reuse a global popup anymore. We bind a popup to each label on click.
 
