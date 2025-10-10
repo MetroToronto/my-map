@@ -144,7 +144,7 @@ html, body {
 /* Final size for the inline Planning Zone search box */
 .pd-actions .pz-inline-search {
   flex: 0 0 auto;
-  width: 105px !important;   /* make it wider; force override */
+  width: 102px !important;   /* make it wider; force override */
   padding: 6px 8px;
   border: 1px solid #ddd;
   border-radius: 4px;
