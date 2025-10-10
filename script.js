@@ -1,5 +1,6 @@
 // ===================== Map boot =====================
 const map = L.map('map').setView([43.6532, -79.3832], 11);
+window.map = map; // expose for routing.js
 
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
@@ -245,6 +246,27 @@ fetch(PD_URL)
         if (selectedItem && !map.hasLayer(selectedLabel)) showPDLabel(selectedItem);
       }
     });
+
+    // === Routing hooks (NEW) ===
+    // 1) Registry of PD layers for routing.js to reference by key
+    window.PD_REGISTRY = {};
+    pdIndex.forEach(i => {
+      window.PD_REGISTRY[i.key] = { layer: i.layer, name: i.name };
+    });
+
+    // 2) Helper to return [lon, lat, label] for every CHECKED PD
+    window.getSelectedPDTargets = function () {
+      const boxes = Array.from(document.querySelectorAll('.pd-cbx:checked'));
+      const out = [];
+      for (const box of boxes) {
+        const key = decodeURIComponent(box.dataset.key || '');
+        const item = pdIndex.find(i => i.key === key);
+        if (!item || !item.layer) continue;
+        const c = item.bounds.getCenter();
+        out.push([c.lng, c.lat, item.name || key]);
+      }
+      return out;
+    };
 
   }).catch(err => {
     console.error('Failed to load PDs:', err);
