@@ -141,11 +141,11 @@ html, body {
   font-weight: 700;
 }
 
-/* Balanced inline Planning Zone search box */
+/* Final size for the inline Planning Zone search box */
 .pd-actions .pz-inline-search {
   flex: 0 0 auto;
-  width: 95px;              /* comfortable width for zone numbers */
-  padding: 6px 8px;         /* same height as Engage/Disengage */
+  width: 110px !important;   /* make it wider; force override */
+  padding: 6px 8px;
   border: 1px solid #ddd;
   border-radius: 4px;
   font-size: 14px;
