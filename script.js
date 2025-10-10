@@ -299,13 +299,11 @@ fetch(ZONES_URL)
       onAdd: function () {
         const div = L.DomUtil.create('div', 'pd-control');
         div.innerHTML = `
-          <div class="pd-header pz-header">
+          <div class="pd-header">
             <strong>Planning Zones</strong>
-            <div class="pz-right">
-              <div class="pd-actions">
-                <button type="button" id="pz-engage">Engage</button>
-                <button type="button" id="pz-disengage">Disengage</button>
-              </div>
+            <div class="pd-actions">
+              <button type="button" id="pz-engage">Engage</button>
+              <button type="button" id="pz-disengage">Disengage</button>
               <input id="pz-inline-search" class="pz-inline-search" type="text" placeholder="Zone #">
             </div>
           </div>
