@@ -141,13 +141,14 @@ html, body {
   font-weight: 700;
 }
 
-/* Buttons + inline search on same row */
+/* Smaller inline zone search box so it fits in the panel */
 .pd-actions .pz-inline-search {
-  flex: 1 1 auto;
-  min-width: 110px;
-  padding: 6px 8px;
+  flex: 0 0 auto;
+  width: 70px;            /* smaller width fits with buttons */
+  padding: 5px 6px;
   border: 1px solid #ddd;
   border-radius: 4px;
+  font-size: 13px;
 }
 
 .pz-right {
