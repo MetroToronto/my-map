@@ -31,10 +31,10 @@ html, body {
   display: flex;
   gap: 6px;
   align-items: stretch;
-  margin: 0; /* no extra margin under the buttons */
+  margin: 0;
 }
 .pd-control .pd-actions button {
-  flex: 0 0 auto; /* natural width for most buttons */
+  flex: 0 0 auto;
   border: 1px solid #ddd;
   background: #f7f7f7;
   padding: 6px 8px;
@@ -114,16 +114,8 @@ html, body {
 /* Label wrapper — positions the tag slightly higher on the map */
 .zone-label {
   text-align: center;
-  transform: translateY(-12px); /* move label slightly upward */
+  transform: translateY(-4px);
 }
-
-/* Wrapper that ensures the label sits slightly above its point */
-.zone-label {
-  text-align: center;
-  transform: translateY(-4px); /* small upward adjustment */
-}
-
-.zone-label { text-align: center; }       /* no transform here */
 
 .zone-tag {
   display: inline-block;
@@ -132,32 +124,30 @@ html, body {
   line-height: 1.2;
   white-space: nowrap;
   background: #fff;
-  border: 1px solid #888; /* thinner border to reduce height */
+  border: 1px solid #888;
   border-radius: 6px;
-  padding: 2px 8px;       /* a bit tighter padding = shorter box */
+  padding: 2px 8px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.25);
   color: #000;
 }
 
-/* Planning Zones search row */
-.pd-control .pz-search {
+/* Inline Planning Zone search in header */
+.pd-control .pz-header {
   display: flex;
-  gap: 6px;
-  margin-top: 6px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
-.pz-search input[type="text"] {
-  flex: 1;
+
+.pz-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pz-inline-search {
+  width: 120px;
   padding: 6px 8px;
   border: 1px solid #ddd;
   border-radius: 4px;
-}
-.pz-search button {
-  border: 1px solid #ddd;
-  background: #f7f7f7;
-  padding: 6px 10px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: 500;
-}
-
 }
