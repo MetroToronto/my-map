@@ -131,12 +131,23 @@ html, body {
   color: #000;
 }
 
-/* Inline Planning Zone search in header */
-.pd-control .pz-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+/* Planning Zones header matches Planning Districts layout */
+.pd-control .pd-header {
+  margin: 0;
+}
+.pd-control .pd-header > strong {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 700;
+}
+
+/* Buttons + inline search on same row */
+.pd-actions .pz-inline-search {
+  flex: 1 1 auto;
+  min-width: 110px;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
 }
 
 .pz-right {
