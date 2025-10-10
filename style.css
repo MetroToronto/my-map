@@ -1,3 +1,4 @@
+/* ---------- Layout ---------- */
 html, body {
   height: 100%;
   margin: 0;
@@ -7,75 +8,116 @@ html, body {
   width: 100%;
 }
 
-/* ---- Control panels (PD & Zones share this) ---- */
-.pd-control {
-  background: #fff;
-  padding: 8px 8px 8px; /* adjust bottom padding if you want tighter/looser */
-  box-shadow: 0 1px 4px rgba(0,0,0,.25);
-  border-radius: 6px;
+/* ---------- Shared UI primitives ---------- */
+:root {
+  --ui-bg: #fff;
+  --ui-border: #ddd;
+  --ui-border-strong: #bbb;
+  --ui-shadow: 0 1px 4px rgba(0,0,0,.25);
+  --ui-radius: 8px;
+  --ui-pad: 10px;
+  --ui-gap: 8px;
+
+  --pd-stroke: #ff6600;
+  --pd-selected: #d40000;
+  --zone-stroke: #2166f3;
+  --zone-selected: #0b3aa5;
+
+  --btn-bg: #fff;
+  --btn-bg-ghost: #f7f7f7;
+  --btn-border: #bbb;
+  --btn-hover: #f0f0f0;
+}
+
+/* ---------- Control panel shell (PD, Zones, Routing) ---------- */
+.pd-control,
+.routing-control {
+  background: var(--ui-bg);
+  padding: var(--ui-pad);
+  box-shadow: var(--ui-shadow);
+  border-radius: var(--ui-radius);
   font: 14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  min-width: 260px;
-  box-sizing: border-box; /* JS sets exact width to match geocoder */
 }
 
-/* Title above the buttons */
-.pd-control .pd-header { margin: 0; }
-.pd-control .pd-header > strong {
-  display: block;
-  margin-bottom: 4px; /* gap between title and button row */
-  font-weight: 700;
-}
-
-/* Buttons row */
-.pd-control .pd-actions {
+.pd-header,
+.routing-header {
   display: flex;
-  gap: 6px;
-  align-items: stretch;
-  margin: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-gap);
+  margin-bottom: 6px;
 }
-.pd-control .pd-actions button {
-  flex: 0 0 auto;
-  border: 1px solid #ddd;
-  background: #f7f7f7;
-  padding: 6px 8px;
-  border-radius: 4px;
+
+.pd-actions,
+.routing-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-gap);
+  flex-wrap: wrap;
+}
+
+.pd-control.collapsed .pd-list {
+  display: none;
+}
+
+/* ---------- Buttons & inputs ---------- */
+.pd-control button,
+.routing-control button {
+  appearance: none;
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-border);
+  border-radius: 10px;
+  padding: 6px 10px;
   cursor: pointer;
-  white-space: nowrap;
-  font-weight: 500;
+  font: inherit;
 }
-/* Right-aligned button that fills remaining row space (e.g., Expand ▾) */
-.pd-control .pd-actions .grow {
-  flex: 1;
-  text-align: center;
-  font-weight: 600;
+.pd-control button:hover,
+.routing-control button:hover {
+  background: var(--btn-hover);
 }
-
-/* Active state (for Engage/Disengage) */
-.pd-control .pd-actions button.active {
-  background: #dbeafe;   /* light blue */
-  border-color: #60a5fa; /* blue border */
-  color: #1e3a8a;        /* dark blue text */
-  font-weight: 600;
+.pd-control button.active,
+.routing-control button.active {
+  border-color: #888;
+  box-shadow: inset 0 0 0 1px #888;
+}
+button.ghost {
+  background: var(--btn-bg-ghost);
 }
 
-/* Scrollable list under the PD buttons */
-.pd-control .pd-list {
-  max-height: 260px;
+.pd-control input[type="text"],
+.routing-control input[type="text"] {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+/* ---------- PD list ---------- */
+.pd-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  max-height: 300px;
   overflow: auto;
-  border-top: 1px solid #eee;
-  padding-top: 6px;
+  padding: 2px;
+  border-top: 1px dashed var(--ui-border);
   margin-top: 6px;
 }
-.pd-control.collapsed .pd-list { display: none; }
 
-/* PD list items */
 .pd-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 0;
+  padding: 4px 2px;
+  border-radius: 4px;
 }
-.pd-item input[type="checkbox"] {
+.pd-item:hover {
+  background: rgba(0,0,0,.03);
+}
+
+.pd-cbx {
   flex: 0 0 auto;
   margin: 0 2px 0 0;
   width: 14px;
@@ -86,81 +128,92 @@ html, body {
   flex: 1;
   user-select: none;
 }
-.pd-item:hover {
-  background: rgba(0,0,0,.03);
-  border-radius: 4px;
-}
-/* Bold PD name when selected */
-.pd-item.selected .pd-name { font-weight: 800; }
-
-/* Map labels */
-.pd-label {
-  font-weight: 800;
-  font-size: 13px;
-  text-shadow: 0 0 3px #fff, 0 0 3px #fff;
-  pointer-events: none;
+.pd-item.selected .pd-name {
+  font-weight: 600;
 }
 
-/* the divIcon container itself: no fixed size, no background */
-.leaflet-div-icon.zone-label {
-  width: auto !important;
-  height: auto !important;
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-  pointer-events: auto;      /* label must be clickable */
+/* ---------- PD selected label (center pin) ---------- */
+.pd-label .leaflet-tooltip {
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  box-shadow: var(--ui-shadow);
+  color: #000;
+  font-weight: 600;
+  padding: 4px 8px;
 }
 
-/* Label wrapper — positions the tag slightly higher on the map */
+/* ---------- Zones (chips, popup) ---------- */
 .zone-label {
-  text-align: center;
-  transform: translateY(-4px);
+  /* container for the chip */
 }
-
 .zone-tag {
   display: inline-block;
-  font-weight: 800;
-  font-size: 14px;
-  line-height: 1.2;
-  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--zone-stroke);
   background: #fff;
-  border: 1px solid #888;
-  border-radius: 6px;
-  padding: 2px 8px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
-  color: #000;
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.1;
+  box-shadow: var(--ui-shadow);
+  user-select: none;
+}
+.zone-popup .leaflet-popup-content {
+  font: 14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }
 
-/* Planning Zones header matches Planning Districts layout */
-.pd-control .pd-header {
-  margin: 0;
-}
-.pd-control .pd-header > strong {
-  display: block;
-  margin-bottom: 4px;
-  font-weight: 700;
-}
-
-/* Final size for the inline Planning Zone search box */
-.pd-actions .pz-inline-search {
-  flex: 0 0 auto;
-  width: 102.5px !important;   /* make it wider; force override */
-  padding: 6px 8px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 14px;
-  box-sizing: border-box;
-}
-
-.pz-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
+/* ---------- Zones control inline search ---------- */
 .pz-inline-search {
   width: 120px;
   padding: 6px 8px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  font: inherit;
+}
+
+/* ---------- Routing control (Trip Generator & Keys) ---------- */
+.routing-control .routing-section + .routing-section {
+  border-top: 1px dashed var(--ui-border);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.routing-row {
+  display: flex;
+  gap: var(--ui-gap);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.routing-hint {
+  color: #666;
+  font-size: 12.5px;
+  margin-top: 4px;
+  display: block;
+}
+
+/* Key manager sub-section */
+.key-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+#txt-ors-keys {
+  font-family: ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* ---------- Leaflet default tweaks ---------- */
+.leaflet-control {
+  /* ensure our cards align nicely with the geocoder width */
+}
+.leaflet-popup-content {
+  margin: 8px 10px;
+}
+.leaflet-popup-content-wrapper {
+  border-radius: 10px;
+}
+.leaflet-control-geocoder {
+  max-width: 320px;
 }
