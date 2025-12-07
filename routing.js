@@ -309,7 +309,7 @@
     return out;
   }
 
-  // ===== Popup for validation errors =====
+  // ===== Overlay popups =====
   function showValidationPopup(invalid) {
     if (!invalid || !invalid.length) return;
     const existing = document.getElementById('routing-validation-overlay');
@@ -354,6 +354,62 @@
     if (closeBtn) {
       closeBtn.addEventListener('click', () => backdrop.remove());
     }
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) backdrop.remove();
+    });
+  }
+
+  // Popup specifically for "only one PD" requirement for Generate PZ Trips
+  function showSinglePDPopup(selectedKeys) {
+    const existing = document.getElementById('routing-pd-overlay');
+    if (existing) existing.remove();
+
+    const registry = global.PD_REGISTRY || {};
+    const names = (selectedKeys || []).map(k => {
+      const reg = registry[k];
+      return reg?.name || k || 'PD';
+    });
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'routing-pd-overlay';
+    backdrop.style.position = 'fixed';
+    backdrop.style.inset = '0';
+    backdrop.style.zIndex = '9999';
+    backdrop.style.background = 'rgba(0,0,0,0.35)';
+    backdrop.style.display = 'flex';
+    backdrop.style.alignItems = 'center';
+    backdrop.style.justifyContent = 'center';
+
+    const box = document.createElement('div');
+    box.style.background = '#fff';
+    box.style.padding = '16px 20px';
+    box.style.borderRadius = '8px';
+    box.style.maxWidth = '420px';
+    box.style.width = '90%';
+    box.style.boxShadow = '0 8px 20px rgba(0,0,0,0.25)';
+    box.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    box.innerHTML = `
+      <h3 style="margin:0 0 8px 0;">Select a single Planning District</h3>
+      <p style="margin:0 0 8px 0;font-size:0.95em;">
+        <strong>Generate PZ Trips</strong> can only run when exactly one Planning District
+        is selected. Right now you have the following PDs checked:
+      </p>
+      <ul style="margin:0 0 12px 20px;padding:0;font-size:0.95em;">
+        ${names.map(n => `<li>${escapeHtml(n)}</li>`).join('')}
+      </ul>
+      <p style="margin:0 0 12px 0;font-size:0.95em;">
+        Please uncheck all but one Planning District and try again.
+      </p>
+      <div style="text-align:right;">
+        <button id="routing-pd-close">Close</button>
+      </div>
+    `;
+
+    backdrop.appendChild(box);
+    document.body.appendChild(backdrop);
+
+    const closeBtn = box.querySelector('#routing-pd-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => backdrop.remove());
     backdrop.addEventListener('click', (e) => {
       if (e.target === backdrop) backdrop.remove();
     });
@@ -471,15 +527,70 @@
     }
   }
 
-  // ----- Generate for PZs (1 best route per zone) -----
+  // ----- Generate for PZs -----
+  // Works in two modes:
+  //   1) If a specific Zone is selected (script.js → getSelectedZoneTargets), use that.
+  //   2) Otherwise, if exactly ONE PD is checked, route to ALL zones in that PD
+  //      (via script.js → getZoneTargetsForPD(pdKey)).
   async function generateForPZs() {
     try {
       const origin = getOriginLonLat();
       const reverse = !!byId('rt-reverse')?.checked;
 
-      const targets = collectZoneTargets();
+      // First, try explicit zone selection (takes priority)
+      let targets = [];
+      let explicitZoneTargets = [];
+      try {
+        explicitZoneTargets = collectZoneTargets();
+      } catch (e) {
+        if (e.type === 'noZonesHelper') {
+          // If helper missing we'll handle below for PD mode as well.
+          explicitZoneTargets = [];
+        } else {
+          throw e;
+        }
+      }
+
+      if (explicitZoneTargets.length) {
+        targets = explicitZoneTargets;
+      } else {
+        // No specific zone selected. Fall back to "one PD" mode.
+        const boxes = Array.from(document.querySelectorAll('.pd-cbx:checked'));
+        const pdKeys = boxes
+          .map(b => decodeURIComponent(b.dataset.key || b.closest('.pd-item')?.dataset.key || ''))
+          .filter(Boolean);
+
+        if (!pdKeys.length) {
+          alert('To generate PZ trips, either select a Planning Zone or check exactly one Planning District.');
+          return;
+        }
+        if (pdKeys.length > 1) {
+          showSinglePDPopup(pdKeys);
+          return;
+        }
+
+        const pdKey = pdKeys[0];
+
+        if (typeof global.getZoneTargetsForPD !== 'function') {
+          alert('PZ trip generation by PD requires script.js to define window.getZoneTargetsForPD(pdKey).');
+          return;
+        }
+
+        const pdTargets = global.getZoneTargetsForPD(pdKey) || [];
+        if (!pdTargets.length) {
+          alert('No Planning Zones found for the selected Planning District.');
+          return;
+        }
+
+        targets = pdTargets.map(t => ({
+          lon: t.lon,
+          lat: t.lat,
+          label: t.label
+        }));
+      }
+
       if (!targets.length) {
-        alert('No Planning Zones selected. Engage zones and/or provide a getSelectedZoneTargets() helper.');
+        alert('No Planning Zones available to route to.');
         return;
       }
 
