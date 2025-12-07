@@ -114,7 +114,7 @@
 
   function hydrateKeys() {
     const urlKey = qParam('orsKey');
-    const saved = savedKeys();
+    const saved  = savedKeys();
     const inline = [INLINE_DEFAULT_KEY];
     S.keys = (urlKey ? [urlKey] : []).concat(saved.length ? saved : inline);
     S.keyIndex = Math.min(+localStorage.getItem(LS_ACTIVE_INDEX) || 0, Math.max(0, S.keys.length - 1));
@@ -234,14 +234,14 @@
 
       if (S.minuteCount >= MAX_PER_MINUTE) {
         const resetAt = S.minuteStartMs + 60_000;
-        const waitMs = Math.max(0, resetAt - now);
+        const waitMs  = Math.max(0, resetAt - now);
         if (waitMs > 0) {
           showRateWaitOverlay(waitMs);
           await sleep(waitMs);
           hideRateWaitOverlay();
         }
         S.minuteStartMs = Date.now();
-        S.minuteCount = 0;
+        S.minuteCount   = 0;
       }
 
       S.minuteCount += 1;
@@ -249,9 +249,10 @@
     }
   };
 
-  // ===== ORS fetch =====
+  // ===== ORS fetch with retries & 429 handling =====
   async function orsFetch(path, { method = 'GET', body } = {}, attempt = 0) {
     const url = new URL(ORS_BASE + path);
+
     let res;
     try {
       res = await fetch(url.toString(), {
@@ -263,24 +264,56 @@
         body: method === 'GET' ? undefined : JSON.stringify(body)
       });
     } catch (e) {
+      // Network / CORS / transient failure (“Failed to fetch”, etc.)
+      if (attempt < 2) {
+        const waitMs = 10_000 * (attempt + 1); // 10s, then 20s
+        showRateWaitOverlay(waitMs);
+        await sleep(waitMs);
+        hideRateWaitOverlay();
+        return orsFetch(path, { method, body }, attempt + 1);
+      }
       throw new Error(e && e.message ? e.message : 'Failed to fetch');
     }
 
-    if ([401, 403, 429].includes(res.status) && rotateKey()) {
+    // 429 Too Many Requests
+    if (res.status === 429) {
+      // If we have multiple keys, rotate
+      if (rotateKey()) {
+        await sleep(150);
+        return orsFetch(path, { method, body }, attempt + 1);
+      }
+      // Single key: honour Retry-After or wait ~60s
+      if (attempt < 2) {
+        let waitMs = 60_000;
+        const retryAfter = res.headers.get('retry-after');
+        if (retryAfter) {
+          const parsed = parseInt(retryAfter, 10);
+          if (!Number.isNaN(parsed) && parsed >= 0) {
+            waitMs = parsed * 1000;
+          }
+        }
+        showRateWaitOverlay(waitMs);
+        await sleep(waitMs);
+        hideRateWaitOverlay();
+        return orsFetch(path, { method, body }, attempt + 1);
+      }
+    }
+
+    // 401/403 with multiple keys → rotate and retry
+    if ([401, 403].includes(res.status) && rotateKey()) {
       await sleep(150);
       return orsFetch(path, { method, body }, attempt + 1);
     }
-    if (res.status === 500 && attempt < 1) {
-      await sleep(200);
-      return orsFetch(path, { method, body }, attempt + 1);
-    }
+
     if (!res.ok) {
       const txt = await res.text().catch(() => res.statusText);
       throw new Error(`ORS ${res.status}: ${txt}`);
     }
+
     return res.json();
   }
 
+  // ===== Directions wrapper =====
   async function getRoutes(originLonLat, destLonLat, maxCount) {
     const o = sanitizeLonLat(originLonLat);
     const d = sanitizeLonLat(destLonLat);
@@ -319,7 +352,7 @@
       S.group = null;
     }
     S.lastTrips = [];
-    S.lastMode = null;
+    S.lastMode  = null;
     global.ROUTING_CACHE = undefined;
   }
 
@@ -333,18 +366,18 @@
   // ===== PD route-count + requests =====
   function collectPDRequests() {
     const registry = global.PD_REGISTRY || {};
-    const items = Array.from(document.querySelectorAll('.pd-item'));
-    const invalid = [];
+    const items    = Array.from(document.querySelectorAll('.pd-item'));
+    const invalid  = [];
     const requests = [];
 
     // validate route-count fields
     for (const item of items) {
-      const cbx = item.querySelector('.pd-cbx');
+      const cbx   = item.querySelector('.pd-cbx');
       const input = item.querySelector('.pd-route-count');
       const keyEnc = cbx?.dataset.key || item.dataset.key || '';
-      const key = decodeURIComponent(keyEnc || '');
-      const reg = registry[key];
-      const name = reg?.name || key || 'Unknown PD';
+      const key    = decodeURIComponent(keyEnc || '');
+      const reg    = registry[key];
+      const name   = reg?.name || key || 'Unknown PD';
 
       if (!input) continue;
 
@@ -361,7 +394,7 @@
 
     if (invalid.length) {
       const err = new Error('Invalid PD route counts');
-      err.type = 'validation';
+      err.type  = 'validation';
       err.invalid = invalid;
       throw err;
     }
@@ -372,18 +405,18 @@
       if (!cbx || !cbx.checked) continue;
 
       const keyEnc = cbx.dataset.key || item.dataset.key || '';
-      const key = decodeURIComponent(keyEnc || '');
-      const reg = registry[key];
+      const key    = decodeURIComponent(keyEnc || '');
+      const reg    = registry[key];
       if (!reg || !reg.layer) continue;
 
       const center = reg.layer.getBounds().getCenter();
-      const name = reg.name || key || 'PD';
+      const name   = reg.name || key || 'PD';
 
       let count = 1;
       const input = item.querySelector('.pd-route-count');
       if (input) {
         const raw = input.value.trim() || '1';
-        const n = Number(raw);
+        const n   = Number(raw);
         if (!Number.isFinite(n) || n <= 0) continue;
         count = Math.min(Math.max(1, Math.floor(n)), 3);
       }
@@ -404,7 +437,7 @@
   function collectZoneTargets() {
     if (typeof global.getSelectedZoneTargets !== 'function') {
       const err = new Error('Zone helper missing');
-      err.type = 'noZonesHelper';
+      err.type  = 'noZonesHelper';
       throw err;
     }
     const raw = global.getSelectedZoneTargets() || [];
@@ -538,16 +571,16 @@
 
   // ===== Button state =====
   function setBusy(mode, busy) {
-    const btnPD = byId('rt-gen-pd');
-    const btnPZ = byId('rt-gen-pz');
+    const btnPD    = byId('rt-gen-pd');
+    const btnPZ    = byId('rt-gen-pz');
     const btnClear = byId('rt-clear');
 
     if (mode === 'PD' && btnPD) {
-      btnPD.disabled = busy;
+      btnPD.disabled  = busy;
       btnPD.textContent = busy ? 'Generating…' : 'Generate PD Trips';
     }
     if (mode === 'PZ' && btnPZ) {
-      btnPZ.disabled = busy;
+      btnPZ.disabled  = busy;
       btnPZ.textContent = busy ? 'Generating…' : 'Generate PZ Trips';
     }
     if (btnClear) btnClear.disabled = busy;
@@ -576,10 +609,11 @@
         const d = reverse ? origin : dest;
 
         await RateLimiter.beforeRequest();
-        const json = await getRoutes(o, d, req.count);
+        const json  = await getRoutes(o, d, req.count);
         const feats = Array.isArray(json.features) ? json.features.slice(0, req.count) : [];
         if (!feats.length) continue;
 
+        // sort alternatives by duration then distance
         feats.sort((a, b) => {
           const pa = a.properties || {};
           const pb = b.properties || {};
@@ -646,21 +680,18 @@
       let targets = [];
       let explicitZoneTargets = [];
 
-      // Try to use the selected zone (if any)
+      // try selected zone first
       try {
         explicitZoneTargets = collectZoneTargets();
       } catch (e) {
-        if (e.type === 'noZonesHelper') {
-          explicitZoneTargets = [];
-        } else {
-          throw e;
-        }
+        if (e.type === 'noZonesHelper') explicitZoneTargets = [];
+        else throw e;
       }
 
       if (explicitZoneTargets.length) {
         targets = explicitZoneTargets;
       } else {
-        // No specific zone selected → PD fallback
+        // fallback: 1 PD → all its zones
         const boxes = Array.from(document.querySelectorAll('.pd-cbx:checked'));
         const pdKeys = boxes
           .map(b => decodeURIComponent(b.dataset.key || b.closest('.pd-item')?.dataset.key || ''))
