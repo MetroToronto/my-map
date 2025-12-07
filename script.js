@@ -355,6 +355,32 @@ let selectedZoneLayer  = null;
 const zoneBaseStyle     = { color: '#2166f3', weight: 2, fillOpacity: 0.08 };
 const zoneSelectedStyle = { color: '#0b3aa5', weight: 4, fillOpacity: 0.25 };
 
+// Helper to approximate center of a zone feature without building Leaflet layers
+function centerOfZoneFeature(f) {
+  if (!f || !f.geometry) return null;
+  const g = f.geometry;
+  if (g.type === 'Point') {
+    return { lng: g.coordinates[0], lat: g.coordinates[1] };
+  }
+  let coords = null;
+  if (g.type === 'Polygon') {
+    coords = g.coordinates[0];
+  } else if (g.type === 'MultiPolygon') {
+    coords = g.coordinates[0] && g.coordinates[0][0];
+  }
+  if (!coords || !coords.length) return null;
+  let sx = 0, sy = 0, n = 0;
+  coords.forEach(c => {
+    if (c && c.length >= 2) {
+      sx += c[0];
+      sy += c[1];
+      n++;
+    }
+  });
+  if (!n) return null;
+  return { lng: sx / n, lat: sy / n };
+}
+
 // Build zone indices
 fetch(ZONES_URL)
   .then(r => {
@@ -385,6 +411,19 @@ fetch(ZONES_URL)
         }
       }
     });
+
+    // Expose helper for routing.js: all zone targets for a PD
+    window.getZoneTargetsForPD = function (pdKey) {
+      const feats = zonesByKey.get(String(pdKey)) || [];
+      const out = [];
+      for (const f of feats) {
+        const c = centerOfZoneFeature(f);
+        if (!c) continue;
+        const label = 'Zone ' + zoneKeyFromProps(f.properties || {});
+        out.push({ lon: c.lng, lat: c.lat, label });
+      }
+      return out;
+    };
 
     // Zones control (Engage / Disengage) with inline search
     const ZonesControl = L.Control.extend({
@@ -450,7 +489,6 @@ fetch(ZONES_URL)
         // Clear zones view
         if (typeof window._zonesClear === 'function') window._zonesClear();
       } else {
-        // If a PD is selected, Zones will be refreshed via _zonesShowFor when PD changes.
         if (!map.hasLayer(zonesGroup)) zonesGroup.addTo(map);
         updateZoneLabels();
       }
