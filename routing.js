@@ -7,7 +7,10 @@
   const COLOR_FIRST  = '#0b3aa5';
   const COLOR_OTHERS = '#2166f3';
 
-  // Inline default ORS key (backup)
+  // ORS free-tier assumption: 40 requests / minute
+  const MAX_PER_MINUTE = 40;
+  const BASE_DELAY_MS  = 250;
+
   const INLINE_DEFAULT_KEY =
     'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6Ijk5NWI5MTE5OTM2YTRmYjNhNDRiZTZjNDRjODhhNTRhIiwiaCI6Im11cm11cjY0In0=';
   const LS_KEYS         = 'ORS_KEYS';
@@ -18,11 +21,14 @@
     group: null,
     keys: [],
     keyIndex: 0,
-    lastMode: null,  // 'PD' or 'PZ'
-    lastTrips: []    // cached ORS features per destination
+    lastMode: null,
+    lastTrips: [],
+    // rate-limit state
+    minuteStartMs: 0,
+    minuteCount  : 0
   };
 
-  // ===== Small helpers =====
+  // ===== Tiny helpers =====
   const byId = (id) => document.getElementById(id);
 
   const escapeHtml = (str) => String(str)
@@ -34,7 +40,6 @@
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const qParam = (k) => new URLSearchParams(location.search).get(k) || '';
-  const toRad  = (d) => d * Math.PI / 180;
   const isFiniteNum = (n) => Number.isFinite(n) && !Number.isNaN(n);
   const num = (x) => {
     const n = typeof x === 'string' ? parseFloat(x) : +x;
@@ -45,7 +50,7 @@
   function sanitizeLonLat(input) {
     let arr = Array.isArray(input) ? input : [undefined, undefined];
     let x = num(arr[0]), y = num(arr[1]);
-    // Heuristic: if swapped, un-swap.
+    // If lat/lon seem swapped, flip them.
     if (isFiniteNum(x) && isFiniteNum(y) && Math.abs(x) <= 90 && Math.abs(y) > 90) {
       const t = x; x = y; y = t;
     }
@@ -98,7 +103,7 @@
     throw new Error(`Origin shape unsupported: ${JSON.stringify(o)}`);
   }
 
-  // ===== ORS key management =====
+  // ===== Key management =====
   function savedKeys() {
     try {
       return JSON.parse(localStorage.getItem(LS_KEYS) || '[]');
@@ -126,16 +131,140 @@
     return true;
   }
 
+  // ===== Rate limiter + spinner overlay =====
+  let rateOverlayEl = null;
+  let rateOverlayTextEl = null;
+  let rateOverlayTimer = null;
+
+  function ensureSpinnerStyle() {
+    if (document.getElementById('ors-rate-style')) return;
+    const style = document.createElement('style');
+    style.id = 'ors-rate-style';
+    style.textContent = `
+      @keyframes ors-spin { 0%{transform:rotate(0deg);}100%{transform:rotate(360deg);} }
+      .ors-spinner {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        border: 4px solid rgba(0,0,0,0.1);
+        border-top-color: #333;
+        animation: ors-spin 1s linear infinite;
+        margin: 0 auto 10px auto;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function showRateWaitOverlay(waitMs) {
+    ensureSpinnerStyle();
+    const target = Date.now() + waitMs;
+
+    if (!rateOverlayEl) {
+      const backdrop = document.createElement('div');
+      backdrop.id = 'ors-rate-overlay';
+      backdrop.style.position = 'fixed';
+      backdrop.style.inset = '0';
+      backdrop.style.zIndex = '9998';
+      backdrop.style.background = 'rgba(0,0,0,0.35)';
+      backdrop.style.display = 'flex';
+      backdrop.style.alignItems = 'center';
+      backdrop.style.justifyContent = 'center';
+
+      const box = document.createElement('div');
+      box.style.background = '#fff';
+      box.style.padding = '16px 20px';
+      box.style.borderRadius = '8px';
+      box.style.maxWidth = '360px';
+      box.style.width = '90%';
+      box.style.boxShadow = '0 8px 20px rgba(0,0,0,0.25)';
+      box.style.textAlign = 'center';
+      box.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+      box.innerHTML = `
+        <div class="ors-spinner"></div>
+        <h3 style="margin:0 0 8px 0;font-size:16px;">Waiting for OpenRouteService</h3>
+        <p id="ors-rate-text" style="margin:0;font-size:13px;color:#444;"></p>
+      `;
+
+      backdrop.appendChild(box);
+      document.body.appendChild(backdrop);
+
+      rateOverlayEl = backdrop;
+      rateOverlayTextEl = box.querySelector('#ors-rate-text');
+    }
+
+    rateOverlayEl.style.display = 'flex';
+
+    function updateText() {
+      const remaining = Math.max(0, target - Date.now());
+      const secs = Math.ceil(remaining / 1000);
+      if (rateOverlayTextEl) {
+        rateOverlayTextEl.textContent =
+          `Rate limit reached. Continuing in about ${secs}s…`;
+      }
+      if (remaining <= 0 && rateOverlayTimer) {
+        clearInterval(rateOverlayTimer);
+        rateOverlayTimer = null;
+      }
+    }
+
+    updateText();
+    if (rateOverlayTimer) clearInterval(rateOverlayTimer);
+    rateOverlayTimer = setInterval(updateText, 1000);
+  }
+
+  function hideRateWaitOverlay() {
+    if (rateOverlayTimer) {
+      clearInterval(rateOverlayTimer);
+      rateOverlayTimer = null;
+    }
+    if (rateOverlayEl) {
+      rateOverlayEl.style.display = 'none';
+    }
+  }
+
+  const RateLimiter = {
+    async beforeRequest() {
+      const now = Date.now();
+
+      if (!S.minuteStartMs || now - S.minuteStartMs >= 60_000) {
+        S.minuteStartMs = now;
+        S.minuteCount = 0;
+      }
+
+      if (S.minuteCount >= MAX_PER_MINUTE) {
+        const resetAt = S.minuteStartMs + 60_000;
+        const waitMs = Math.max(0, resetAt - now);
+        if (waitMs > 0) {
+          showRateWaitOverlay(waitMs);
+          await sleep(waitMs);
+          hideRateWaitOverlay();
+        }
+        S.minuteStartMs = Date.now();
+        S.minuteCount = 0;
+      }
+
+      S.minuteCount += 1;
+      if (BASE_DELAY_MS > 0) await sleep(BASE_DELAY_MS);
+    }
+  };
+
+  // ===== ORS fetch =====
   async function orsFetch(path, { method = 'GET', body } = {}, attempt = 0) {
     const url = new URL(ORS_BASE + path);
-    const res = await fetch(url.toString(), {
-      method,
-      headers: {
-        Authorization: currentKey(),
-        ...(method !== 'GET' && { 'Content-Type': 'application/json' })
-      },
-      body: method === 'GET' ? undefined : JSON.stringify(body)
-    });
+    let res;
+    try {
+      res = await fetch(url.toString(), {
+        method,
+        headers: {
+          Authorization: currentKey(),
+          ...(method !== 'GET' && { 'Content-Type': 'application/json' })
+        },
+        body: method === 'GET' ? undefined : JSON.stringify(body)
+      });
+    } catch (e) {
+      throw new Error(e && e.message ? e.message : 'Failed to fetch');
+    }
 
     if ([401, 403, 429].includes(res.status) && rotateKey()) {
       await sleep(150);
@@ -152,7 +281,6 @@
     return res.json();
   }
 
-  // Get 1–3 routes (alternative_routes) from ORS Directions v2 (geojson)
   async function getRoutes(originLonLat, destLonLat, maxCount) {
     const o = sanitizeLonLat(originLonLat);
     const d = sanitizeLonLat(destLonLat);
@@ -175,7 +303,6 @@
     try {
       return await orsFetch(`/v2/directions/${PROFILE}/geojson`, { method: 'POST', body: baseBody });
     } catch (e) {
-      // Handle ORS weird 2099 errors by trying swapped dest coords
       const msg = String(e.message || '');
       const is2099 = msg.includes('ORS 500') && (msg.includes('"code":2099') || msg.includes('code:2099'));
       if (!is2099) throw e;
@@ -185,7 +312,7 @@
     }
   }
 
-  // ===== Drawing =====
+  // ===== Drawing / state =====
   function clearRoutes() {
     if (S.group) {
       try { S.map.removeLayer(S.group); } catch {}
@@ -203,16 +330,14 @@
     L.polyline(latlngs, { color, weight: 4, opacity: 0.9 }).addTo(S.group);
   }
 
-  // ===== PD route-count + targets =====
-  // Expects script.js to have populated window.PD_REGISTRY[key] = { layer, name }.
-  // If an <input class="pd-route-count"> exists in a .pd-item, it must be 0–3.
+  // ===== PD route-count + requests =====
   function collectPDRequests() {
     const registry = global.PD_REGISTRY || {};
     const items = Array.from(document.querySelectorAll('.pd-item'));
     const invalid = [];
     const requests = [];
 
-    // First pass: validate all route-count inputs (0–3, integer).
+    // validate route-count fields
     for (const item of items) {
       const cbx = item.querySelector('.pd-cbx');
       const input = item.querySelector('.pd-route-count');
@@ -221,7 +346,7 @@
       const reg = registry[key];
       const name = reg?.name || key || 'Unknown PD';
 
-      if (!input) continue; // no route-count UI wired yet
+      if (!input) continue;
 
       let raw = input.value.trim();
       if (raw === '') {
@@ -241,7 +366,7 @@
       throw err;
     }
 
-    // Second pass: build PD requests from selected PDs.
+    // build requests from checked PDs
     for (const item of items) {
       const cbx = item.querySelector('.pd-cbx');
       if (!cbx || !cbx.checked) continue;
@@ -275,9 +400,7 @@
     return requests;
   }
 
-  // ===== Zone targets (script.js is expected to provide helper) =====
-  // Expected: window.getSelectedZoneTargets() → array of:
-  //   [lon, lat, label?]  OR  { lon, lat, label }.
+  // ===== Zone targets =====
   function collectZoneTargets() {
     if (typeof global.getSelectedZoneTargets !== 'function') {
       const err = new Error('Zone helper missing');
@@ -309,7 +432,7 @@
     return out;
   }
 
-  // ===== Popup for validation errors =====
+  // ===== Overlays =====
   function showValidationPopup(invalid) {
     if (!invalid || !invalid.length) return;
     const existing = document.getElementById('routing-validation-overlay');
@@ -351,15 +474,69 @@
     document.body.appendChild(backdrop);
 
     const closeBtn = box.querySelector('#routing-validation-close');
-    if (closeBtn) {
-      closeBtn.addEventListener('click', () => backdrop.remove());
-    }
+    if (closeBtn) closeBtn.addEventListener('click', () => backdrop.remove());
     backdrop.addEventListener('click', (e) => {
       if (e.target === backdrop) backdrop.remove();
     });
   }
 
-  // ===== UI / control wiring =====
+  // Overlay for “only one PD” rule for Generate PZ Trips
+  function showSinglePDPopup(selectedKeys) {
+    const existing = document.getElementById('routing-pd-overlay');
+    if (existing) existing.remove();
+
+    const registry = global.PD_REGISTRY || {};
+    const names = (selectedKeys || []).map(k => {
+      const reg = registry[k];
+      return reg?.name || k || 'PD';
+    });
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'routing-pd-overlay';
+    backdrop.style.position = 'fixed';
+    backdrop.style.inset = '0';
+    backdrop.style.zIndex = '9999';
+    backdrop.style.background = 'rgba(0,0,0,0.35)';
+    backdrop.style.display = 'flex';
+    backdrop.style.alignItems = 'center';
+    backdrop.style.justifyContent = 'center';
+
+    const box = document.createElement('div');
+    box.style.background = '#fff';
+    box.style.padding = '16px 20px';
+    box.style.borderRadius = '8px';
+    box.style.maxWidth = '420px';
+    box.style.width = '90%';
+    box.style.boxShadow = '0 8px 20px rgba(0,0,0,0.25)';
+    box.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    box.innerHTML = `
+      <h3 style="margin:0 0 8px 0;">Select a single Planning District</h3>
+      <p style="margin:0 0 8px 0;font-size:0.95em;">
+        <strong>Generate PZ Trips</strong> can only run when exactly one Planning District
+        is selected. Right now you have the following PDs checked:
+      </p>
+      <ul style="margin:0 0 12px 20px;padding:0;font-size:0.95em;">
+        ${names.map(n => `<li>${escapeHtml(n)}</li>`).join('')}
+      </ul>
+      <p style="margin:0 0 12px 0;font-size:0.95em;">
+        Please uncheck all but one Planning District and try again.
+      </p>
+      <div style="text-align:right;">
+        <button id="routing-pd-close">Close</button>
+      </div>
+    `;
+
+    backdrop.appendChild(box);
+    document.body.appendChild(backdrop);
+
+    const closeBtn = box.querySelector('#routing-pd-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => backdrop.remove());
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) backdrop.remove();
+    });
+  }
+
+  // ===== Button state =====
   function setBusy(mode, busy) {
     const btnPD = byId('rt-gen-pd');
     const btnPZ = byId('rt-gen-pz');
@@ -376,10 +553,10 @@
     if (btnClear) btnClear.disabled = busy;
   }
 
-  // ----- Generate for PDs (with 1–3 alternatives per PD) -----
+  // ===== PD trips =====
   async function generateForPDs() {
     try {
-      const origin = getOriginLonLat();
+      const origin  = getOriginLonLat();
       const reverse = !!byId('rt-reverse')?.checked;
 
       const requests = collectPDRequests();
@@ -390,22 +567,19 @@
 
       setBusy('PD', true);
       clearRoutes();
-
-      S.lastMode = 'PD';
+      S.lastMode  = 'PD';
       S.lastTrips = [];
-
-      const PER_REQUEST_DELAY = 250;
 
       for (const req of requests) {
         const dest = sanitizeLonLat([req.lon, req.lat]);
         const o = reverse ? dest : origin;
         const d = reverse ? origin : dest;
 
+        await RateLimiter.beforeRequest();
         const json = await getRoutes(o, d, req.count);
         const feats = Array.isArray(json.features) ? json.features.slice(0, req.count) : [];
         if (!feats.length) continue;
 
-        // Sort by fastest (duration), then shortest (distance)
         feats.sort((a, b) => {
           const pa = a.properties || {};
           const pb = b.properties || {};
@@ -432,26 +606,15 @@
 
         S.lastTrips.push({
           type: 'PD',
-          key: req.key,
+          key : req.key,
           name: req.name,
           reverse,
-          origin: {
-            lon: o[0],
-            lat: o[1],
-            label: originLabel
-          },
-          destination: {
-            lon: d[0],
-            lat: d[1],
-            label: destLabel
-          },
+          origin: { lon: o[0], lat: o[1], label: originLabel },
+          destination: { lon: d[0], lat: d[1], label: destLabel },
           features: feats.map(f => ({ geometry: f.geometry, properties: f.properties }))
         });
-
-        await sleep(PER_REQUEST_DELAY);
       }
 
-      // Expose a simple cache for report.js to consume later
       global.ROUTING_CACHE = {
         mode: 'PD',
         reverse,
@@ -468,34 +631,85 @@
       }
     } finally {
       setBusy('PD', false);
+      hideRateWaitOverlay();
     }
   }
 
-  // ----- Generate for PZs (1 best route per zone) -----
+  // ===== PZ trips =====
+  // 1) If a zone is selected → route to that zone.
+  // 2) Else, if exactly one PD is checked → route to ALL zones in that PD.
   async function generateForPZs() {
     try {
-      const origin = getOriginLonLat();
+      const origin  = getOriginLonLat();
       const reverse = !!byId('rt-reverse')?.checked;
 
-      const targets = collectZoneTargets();
+      let targets = [];
+      let explicitZoneTargets = [];
+
+      // Try to use the selected zone (if any)
+      try {
+        explicitZoneTargets = collectZoneTargets();
+      } catch (e) {
+        if (e.type === 'noZonesHelper') {
+          explicitZoneTargets = [];
+        } else {
+          throw e;
+        }
+      }
+
+      if (explicitZoneTargets.length) {
+        targets = explicitZoneTargets;
+      } else {
+        // No specific zone selected → PD fallback
+        const boxes = Array.from(document.querySelectorAll('.pd-cbx:checked'));
+        const pdKeys = boxes
+          .map(b => decodeURIComponent(b.dataset.key || b.closest('.pd-item')?.dataset.key || ''))
+          .filter(Boolean);
+
+        if (!pdKeys.length) {
+          alert('To generate PZ trips, either select a Planning Zone or check exactly one Planning District.');
+          return;
+        }
+        if (pdKeys.length > 1) {
+          showSinglePDPopup(pdKeys);
+          return;
+        }
+
+        const pdKey = pdKeys[0];
+        if (typeof global.getZoneTargetsForPD !== 'function') {
+          alert('PZ trip generation by PD requires script.js to define window.getZoneTargetsForPD(pdKey).');
+          return;
+        }
+
+        const pdTargets = global.getZoneTargetsForPD(pdKey) || [];
+        if (!pdTargets.length) {
+          alert('No Planning Zones found for the selected Planning District.');
+          return;
+        }
+
+        targets = pdTargets.map(t => ({
+          lon: t.lon,
+          lat: t.lat,
+          label: t.label
+        }));
+      }
+
       if (!targets.length) {
-        alert('No Planning Zones selected. Engage zones and/or provide a getSelectedZoneTargets() helper.');
+        alert('No Planning Zones available to route to.');
         return;
       }
 
       setBusy('PZ', true);
       clearRoutes();
-
-      S.lastMode = 'PZ';
+      S.lastMode  = 'PZ';
       S.lastTrips = [];
-
-      const PER_REQUEST_DELAY = 250;
 
       for (const t of targets) {
         const dest = sanitizeLonLat([t.lon, t.lat]);
         const o = reverse ? dest : origin;
         const d = reverse ? origin : dest;
 
+        await RateLimiter.beforeRequest();
         const json = await getRoutes(o, d, 1);
         const feat = Array.isArray(json.features) ? json.features[0] : null;
         if (!feat) continue;
@@ -512,20 +726,10 @@
           type: 'PZ',
           label: t.label || 'Zone',
           reverse,
-          origin: {
-            lon: o[0],
-            lat: o[1],
-            label: originLabel
-          },
-          destination: {
-            lon: d[0],
-            lat: d[1],
-            label: destLabel
-          },
+          origin: { lon: o[0], lat: o[1], label: originLabel },
+          destination: { lon: d[0], lat: d[1], label: destLabel },
           features: [ { geometry: feat.geometry, properties: feat.properties } ]
         });
-
-        await sleep(PER_REQUEST_DELAY);
       }
 
       global.ROUTING_CACHE = {
@@ -535,19 +739,18 @@
       };
     } catch (e) {
       console.error(e);
-      if (e.type === 'noZonesHelper') {
-        alert('Zone trip generation requires script.js to define window.getSelectedZoneTargets().');
-      } else if (e.code === 'NO_ORIGIN') {
+      if (e.code === 'NO_ORIGIN') {
         alert('Please pick an origin using the address search bar before generating trips.');
       } else {
         alert('Routing error: ' + (e.message || e));
       }
     } finally {
       setBusy('PZ', false);
+      hideRateWaitOverlay();
     }
   }
 
-  // Wire up buttons / key UI
+  // ===== Wire buttons & key UI =====
   function wireControls() {
     const btnPD      = byId('rt-gen-pd');
     const btnPZ      = byId('rt-gen-pz');
@@ -582,7 +785,7 @@
     }
   }
 
-  // Leaflet control for Trip Generator
+  // ===== Trip Generator Leaflet control =====
   const GeneratorControl = L.Control.extend({
     options: { position: 'topleft' },
     onAdd: function () {
