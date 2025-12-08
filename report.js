@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
 
-  // ===== Small helpers =====
+  // ===== Basic geo helpers =====
   function toRad(d) { return d * Math.PI / 180; }
   function isFiniteNum(n) { return Number.isFinite(n) && !Number.isNaN(n); }
 
@@ -63,6 +63,71 @@
     return s;
   }
 
+  // ===== Highway centreline support =====
+  let HIGHWAYS = null;
+  let HIGHWAYS_PROMISE = null;
+
+  async function loadHighways() {
+    if (HIGHWAYS !== null) return HIGHWAYS;
+    if (HIGHWAYS_PROMISE) return HIGHWAYS_PROMISE;
+
+    const candidates = [
+      'data/highway_centerlines.json',
+      'data/highway_centrelines.json',
+      'data/highway_centreline.json'
+    ];
+
+    HIGHWAYS_PROMISE = (async () => {
+      for (const path of candidates) {
+        try {
+          const res = await fetch(path);
+          if (!res.ok) continue;
+          const json = await res.json();
+          const feats = Array.isArray(json.features) ? json.features : [];
+          HIGHWAYS = feats;
+          return HIGHWAYS;
+        } catch (e) {
+          // try next
+        }
+      }
+      HIGHWAYS = [];
+      return HIGHWAYS;
+    })();
+
+    return HIGHWAYS_PROMISE;
+  }
+
+  function nearestHighwayName(lon, lat) {
+    if (!HIGHWAYS || !HIGHWAYS.length) return '';
+
+    let bestName = '';
+    let bestDist2 = Infinity;
+
+    for (const f of HIGHWAYS) {
+      if (!f || !f.geometry || !Array.isArray(f.geometry.coordinates)) continue;
+      const coords = f.geometry.coordinates;
+      const props = f.properties || {};
+      const candName = normalizeName(props.Name || props.name);
+      if (!candName) continue;
+
+      for (const c of coords) {
+        if (!Array.isArray(c) || c.length < 2) continue;
+        const dx = c[0] - lon;
+        const dy = c[1] - lat;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestDist2) {
+          bestDist2 = d2;
+          bestName = candName;
+        }
+      }
+    }
+
+    // Only accept if reasonably near (~1 km in degree-space rough units)
+    const MAX_DEG2 = 0.01 * 0.01;
+    if (bestName && bestDist2 <= MAX_DEG2) return bestName;
+    return '';
+  }
+
   // Try to pull a usable street name out of ORS step fields
   function stepNameNatural(step) {
     if (!step) return '';
@@ -98,11 +163,27 @@
     return out;
   }
 
-  // Build NB/EB/SB/WB street rows from ORS coords + steps
+  function extractStepsFromFeature(feature) {
+    if (!feature || !feature.properties) return [];
+    const props = feature.properties;
+    if (Array.isArray(props.steps) && props.steps.length) return props.steps;
+    const segments = Array.isArray(props.segments) ? props.segments : [];
+    const out = [];
+    for (const seg of segments) {
+      if (seg && Array.isArray(seg.steps)) out.push(...seg.steps);
+    }
+    return out;
+  }
+
+  /**
+   * Build NB/EB/SB/WB street rows from ORS coords + steps.
+   * highway snapping is used as a fallback when step names are missing.
+   */
   function buildMovementsFromDirections(coords, steps) {
     if (!coords || !coords.length || !steps || !steps.length) return [];
 
-    const MIN_SEG_KM = 0.03; // drop < 30 m to avoid ghosts
+    const MIN_SEG_KM = 0.03; // drop < 30 m
+
     const result = [];
 
     for (const step of steps) {
@@ -123,7 +204,7 @@
       const km = distanceM / 1000;
       if (!isFiniteNum(km) || km < MIN_SEG_KM) continue;
 
-      // find a bearing along this subsegment
+      // bearing along subsegment
       let bearing = 0;
       let found = false;
       for (let i = endIdx; i > startIdx; i--) {
@@ -137,7 +218,19 @@
       if (!found) bearing = bearingDeg(coords[startIdx], coords[endIdx]);
       const dir = boundFrom(bearing);
 
-      const name = stepNameNatural(step) || 'Unnamed segment';
+      let name = stepNameNatural(step);
+
+      // Fallback to nearest highway centreline if we still have no name
+      if (!name || name === 'Unnamed segment') {
+        const midIdx = Math.floor((startIdx + endIdx) / 2);
+        const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
+        if (mid && mid.length >= 2) {
+          const hName = nearestHighwayName(mid[0], mid[1]);
+          if (hName) name = hName;
+        }
+      }
+
+      if (!name) name = 'Unnamed segment';
 
       result.push({ dir, name, km });
     }
@@ -145,25 +238,40 @@
     return mergeConsecutive(result);
   }
 
-  function extractStepsFromFeature(feature) {
-    if (!feature || !feature.properties) return [];
-    const props = feature.properties;
-    if (Array.isArray(props.steps) && props.steps.length) return props.steps;
-    const segments = Array.isArray(props.segments) ? props.segments : [];
-    const out = [];
-    for (const seg of segments) {
-      if (seg && Array.isArray(seg.steps)) {
-        out.push(...seg.steps);
-      }
-    }
-    return out;
+  // ===== Convert trips into HTML + CSV rows =====
+
+  function movementsToText(movs) {
+    // For CSV: "NB Queen St W; WB Spadina Ave; ..."
+    return movs.map(m => `${m.dir} ${m.name}`).join('; ');
   }
 
-  // Build one or more tables for a single trip (PD/PZ, 1–3 routes)
-  function buildTablesForTrip(trip) {
-    const pieces = [];
+  function splitZoneLabel(label) {
+    if (!label) return { name: '', id: '' };
+    const s = String(label);
+    const m = s.match(/(\d+)/);
+    if (!m) return { name: s.trim(), id: '' };
+    const id = m[1];
+    const name = s.replace(m[0], '').replace(/[-#:]/, '').trim() || s.trim();
+    return { name, id };
+  }
+
+  function buildTripHtmlAndRow(trip) {
     const features = Array.isArray(trip.features) ? trip.features : [];
-    if (!features.length) return '';
+    if (!features.length) return null;
+
+    const isPD = trip.type === 'PD';
+    const title = isPD
+      ? (trip.name || trip.key || 'Planning District')
+      : (trip.label || 'Planning Zone');
+
+    const originLabel = trip.origin && (trip.origin.label ||
+      `${trip.origin.lon}, ${trip.origin.lat}`) || '';
+    const destLabel = trip.destination && (trip.destination.label ||
+      `${trip.destination.lon}, ${trip.destination.lat}`) || '';
+    const dirLabel = trip.reverse ? 'Destination → Origin' : 'Origin → Destination';
+
+    const perRouteTexts = [];
+    const routeHtmlPieces = [];
 
     features.forEach((feat, idx) => {
       const coords = feat.geometry && Array.isArray(feat.geometry.coordinates)
@@ -185,16 +293,16 @@
           ? 'Route'
           : (idx === 0 ? 'Route 1 (fastest)' : `Route ${idx + 1}`);
 
-      const linesHtml = movs.map(m =>
-        `<tr><td>${escapeHtml(m.dir || '')}</td><td>${escapeHtml(m.name || '')}</td><td style="text-align:right">${km2(m.km)}</td></tr>`
-      ).join('');
-
       const metaPieces = [];
       if (isFiniteNum(distKm)) metaPieces.push(`${km2(distKm)} km`);
       if (isFiniteNum(durMin)) metaPieces.push(`${durMin.toFixed(1)} min`);
       const meta = metaPieces.length ? metaPieces.join(' · ') : '';
 
-      pieces.push(`
+      const linesHtml = movs.map(m =>
+        `<tr><td>${escapeHtml(m.dir || '')}</td><td>${escapeHtml(m.name || '')}</td><td style="text-align:right">${km2(m.km)}</td></tr>`
+      ).join('');
+
+      routeHtmlPieces.push(`
         <h3>${escapeHtml(routeLabel)}</h3>
         ${meta ? `<p class="meta">${escapeHtml(meta)}</p>` : ''}
         <table>
@@ -202,65 +310,120 @@
           <tbody>${linesHtml}</tbody>
         </table>
       `);
+
+      perRouteTexts.push(movementsToText(movs));
     });
 
-    return pieces.join('');
+    if (!routeHtmlPieces.length) return null;
+
+    const metaLine = originLabel && destLabel
+      ? `${originLabel} → ${destLabel} (${dirLabel})`
+      : '';
+
+    // CSV row pieces
+    let name, id;
+    if (isPD) {
+      name = trip.name || trip.key || 'Planning District';
+      id = trip.key || '';
+    } else {
+      const sp = splitZoneLabel(trip.label || '');
+      name = sp.name || trip.label || 'Planning Zone';
+      id = sp.id;
+    }
+
+    const directionsText = perRouteTexts.map((txt, i) => {
+      if (perRouteTexts.length === 1) return txt;
+      return `Route ${i + 1}: ${txt}`;
+    }).join(' | ');
+
+    const cardHtml = `
+      <div class="card">
+        <h2>${escapeHtml(title)}</h2>
+        ${metaLine ? `<p class="meta">${escapeHtml(metaLine)}</p>` : ''}
+        ${routeHtmlPieces.join('')}
+      </div>
+    `;
+
+    return {
+      html: cardHtml,
+      csvRow: { name, id, directions: directionsText }
+    };
   }
 
-  function buildCardsHtml(cache) {
-    if (!cache || !Array.isArray(cache.trips) || !cache.trips.length) return '';
+  function buildReport(cache) {
+    if (!cache || !Array.isArray(cache.trips) || !cache.trips.length) {
+      return { html: '', rows: [] };
+    }
 
-    return cache.trips.map((trip) => {
-      const isPD = trip.type === 'PD';
-      const title = isPD
-        ? (trip.name || trip.key || 'Planning District')
-        : (trip.label || 'Planning Zone');
+    const cards = [];
+    const rows = [];
 
-      const originLabel = trip.origin && (trip.origin.label || `${trip.origin.lon},${trip.origin.lat}`) || '';
-      const destLabel   = trip.destination && (trip.destination.label || `${trip.destination.lon},${trip.destination.lat}`) || '';
-      const dirLabel    = trip.reverse ? 'Destination → Origin' : 'Origin → Destination';
+    cache.trips.forEach(trip => {
+      const built = buildTripHtmlAndRow(trip);
+      if (!built) return;
+      cards.push(built.html);
+      rows.push(built.csvRow);
+    });
 
-      const pathsHtml = buildTablesForTrip(trip);
-      if (!pathsHtml) return '';
-
-      const metaLine = originLabel && destLabel
-        ? `${originLabel} → ${destLabel} (${dirLabel})`
-        : '';
-
-      return `
-        <div class="card">
-          <h2>${escapeHtml(title)}</h2>
-          ${metaLine ? `<p class="meta">${escapeHtml(metaLine)}</p>` : ''}
-          ${pathsHtml}
-        </div>
-      `;
-    }).join('');
+    return { html: cards.join(''), rows };
   }
 
-  function printReport() {
+  // ===== Main print / open-tab logic =====
+
+  async function buildReportWindow(targetWindow) {
     const cache = global.ROUTING_CACHE;
     if (!cache || !cache.trips || !cache.trips.length) {
+      targetWindow.document.write('<p>No trips available.</p>');
+      targetWindow.document.close();
       alert('No trips available. Please generate trips first.');
       return;
     }
 
-    const cardsHtml = buildCardsHtml(cache);
+    // Make sure highways are loaded before we interpret steps
+    await loadHighways();
+
+    const { html: cardsHtml, rows } = buildReport(cache);
     if (!cardsHtml) {
+      targetWindow.document.write('<p>Unable to build report. Trip data is missing or incomplete.</p>');
+      targetWindow.document.close();
       alert('Unable to build report. Trip data is missing or incomplete.');
       return;
     }
+
+    const originObj = global.ROUTING_ORIGIN || {};
+    const originLabel =
+      originObj.label ||
+      originObj.name ||
+      originObj.address ||
+      originObj.query ||
+      'selected origin';
+
+    const now = new Date();
+    const dtStr = now.toLocaleString(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    });
+
+    const reverse = !!cache.reverse;
+    const directionLine = reverse
+      ? 'Direction: PD/PZ → Origin'
+      : 'Direction: Origin → PD/PZ';
+
+    const pageTitle = `Trip Route Distribution for ${originLabel}`;
 
     const css = `
       <style>
         * { box-sizing: border-box; }
         body {
           margin: 0;
-          padding: 16px 20px;
-          font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          padding: 16px 20px 32px 20px;
+          font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+                Roboto, Helvetica, Arial, sans-serif;
+          background: #fafafa;
         }
         h1 {
           font-size: 20px;
-          margin: 0 0 16px 0;
+          margin: 0 0 8px 0;
         }
         h2 {
           font-size: 16px;
@@ -275,10 +438,37 @@
           font-size: 12px;
           color: #555;
         }
+        .top-bar {
+          margin-bottom: 16px;
+          padding-bottom: 12px;
+          border-bottom: 1px solid #ddd;
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        .top-bar-buttons {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        button {
+          border-radius: 999px;
+          border: 1px solid #ccc;
+          padding: 6px 14px;
+          background: #fff;
+          cursor: pointer;
+          font-size: 13px;
+        }
+        button:hover {
+          background: #f3f3f3;
+        }
         table {
           width: 100%;
           border-collapse: collapse;
           margin-bottom: 16px;
+          background: #fff;
         }
         th, td {
           border: 1px solid #ddd;
@@ -291,33 +481,103 @@
         .card {
           page-break-inside: avoid;
           margin-bottom: 22px;
-          padding-bottom: 8px;
-          border-bottom: 1px solid #eee;
+          padding: 10px 12px 12px 12px;
+          border-radius: 8px;
+          background: #fff;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06);
         }
       </style>
     `;
 
-    const w = window.open('', '_blank');
-    if (!w) {
-      alert('Popup blocked. Please allow popups for this site to print the report.');
+    const doc = targetWindow.document;
+    doc.open();
+    doc.write(
+      '<!doctype html><html><head><meta charset="utf-8">' +
+      '<title>' + escapeHtml(pageTitle) + '</title>' +
+      css +
+      '</head><body>' +
+      '<div class="top-bar">' +
+        '<div>' +
+          '<h1>' + escapeHtml(pageTitle) + '</h1>' +
+          '<p class="meta">' + escapeHtml(dtStr) + ' · ' +
+            escapeHtml(directionLine) + '</p>' +
+        '</div>' +
+        '<div class="top-bar-buttons">' +
+          '<button id="copy-csv">Copy to spreadsheet</button>' +
+          '<button id="print-page">Print page</button>' +
+        '</div>' +
+      '</div>' +
+      cardsHtml +
+      '<script>' +
+        'window.__REPORT_ROWS__ = ' + JSON.stringify(rows) + ';' +
+        '(function(){' +
+          'function toCsv(rows){' +
+            'var lines = ["Name,ID,Directions"];' +
+            'rows.forEach(function(r){' +
+              'var cells = [r.name, r.id, r.directions].map(function(v){' +
+                'v = v == null ? "" : String(v);' +
+                'return "\\""+ v.replace(/"/g, "\\"\\"") +"\\"";' +
+              '});' +
+              'lines.push(cells.join(","));' +
+            '});' +
+            'return lines.join("\\n");' +
+          '}' +
+          'var btn = document.getElementById("copy-csv");' +
+          'if (btn){' +
+            'btn.addEventListener("click", function(){' +
+              'var rows = window.__REPORT_ROWS__ || [];' +
+              'var csv = toCsv(rows);' +
+              'if (navigator.clipboard && navigator.clipboard.writeText){' +
+                'navigator.clipboard.writeText(csv).then(function(){' +
+                  'alert("Copied to clipboard as CSV. Paste into Excel or Sheets.");' +
+                '}, function(){' +
+                  'alert("Unable to write to clipboard.");' +
+                '});' +
+              '} else {' +
+                'var ta = document.createElement("textarea");' +
+                'ta.style.position = "fixed";' +
+                'ta.style.top = "0"; ta.style.left = "0";' +
+                'ta.style.width = "1px"; ta.style.height = "1px";' +
+                'ta.value = csv;' +
+                'document.body.appendChild(ta);' +
+                'ta.focus(); ta.select();' +
+                'try { document.execCommand("copy"); alert("Copied to clipboard as CSV. Paste into Excel or Sheets."); }' +
+                'catch(e) { alert("Unable to copy CSV."); }' +
+                'document.body.removeChild(ta);' +
+              '}' +
+            '});' +
+          '}' +
+          'var pb = document.getElementById("print-page");' +
+          'if (pb){ pb.addEventListener("click", function(){ window.print(); }); }' +
+        '})();' +
+      '<\/script>' +
+      '</body></html>'
+    );
+    doc.close();
+  }
+
+  function openReportTab() {
+    const cache = global.ROUTING_CACHE;
+    if (!cache || !cache.trips || !cache.trips.length) {
+      alert('No trips available. Please generate trips first.');
       return;
     }
 
-    const title = cache.mode === 'PZ'
-      ? 'Zone Trip Street Report'
-      : 'PD Trip Street Report';
+    const w = window.open('', '_blank');
+    if (!w) {
+      alert('Popup blocked. Please allow popups for this site to open the report.');
+      return;
+    }
 
-    w.document.write(
-      '<!doctype html><html><head><meta charset="utf-8">' +
-      '<title>' + escapeHtml(title) + '</title>' +
-      css +
-      '</head><body>' +
-      '<h1>' + escapeHtml(title) + '</h1>' +
-      cardsHtml +
-      '<script>window.onload = function(){ window.print(); }<\/script>' +
-      '</body></html>'
-    );
-    w.document.close();
+    // Build contents asynchronously, but the window is opened synchronously
+    buildReportWindow(w).catch(function (e) {
+      console.error('Report build failed:', e);
+      try {
+        w.document.write('<p>Failed to build report.</p>');
+        w.document.close();
+      } catch {}
+      alert('Failed to build report: ' + (e && e.message ? e.message : e));
+    });
   }
 
   // ===== Leaflet Report control =====
@@ -331,7 +591,7 @@
           <button type="button" id="rt-print-report">Print Report</button>
         </div>
         <small style="font-size:11px;color:#555;display:block;margin-top:6px;">
-          Uses the most recently generated trips from the Trip Generator.
+          Opens a new tab using the most recently generated trips from the Trip Generator.
         </small>
       `;
       const btn = div.querySelector('#rt-print-report');
@@ -339,7 +599,7 @@
         btn.addEventListener('click', function (e) {
           e.preventDefault();
           e.stopPropagation();
-          printReport();
+          openReportTab();
         });
       }
       L.DomEvent.disableClickPropagation(div);
@@ -359,9 +619,10 @@
     }
   }
 
-  // Expose a simple hook if you ever want to call it manually
+  // Expose a hook if you ever want to open programmatically
   global.Report = {
-    print: printReport
+    open: openReportTab,
+    print: openReportTab   // backward-compatible name
   };
 
   document.addEventListener('DOMContentLoaded', function () {
