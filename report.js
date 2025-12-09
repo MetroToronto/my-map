@@ -18,27 +18,6 @@
     return R * c;
   }
 
-  function bearingDeg(a, b) {
-    if (!a || !b || a.length < 2 || b.length < 2) return 0;
-    const lon1 = toRad(a[0]), lat1 = toRad(a[1]);
-    const lon2 = toRad(b[0]), lat2 = toRad(b[1]);
-    const dLon = lon2 - lon1;
-    const y = Math.sin(dLon) * Math.cos(lat2);
-    const x = Math.cos(lat1) * Math.cos(lat2) -
-              Math.sin(lat1) * Math.sin(lat2) * Math.cos(dLon);
-    let brng = Math.atan2(y, x) * 180 / Math.PI;
-    if (!isFiniteNum(brng)) return 0;
-    brng = (brng + 360) % 360;
-    return brng;
-  }
-
-  function boundFrom(deg) {
-    if (deg >= 315 || deg < 45) return 'NB';
-    if (deg >= 45 && deg < 135) return 'EB';
-    if (deg >= 135 && deg < 225) return 'SB';
-    return 'WB';
-  }
-
   function km2(v) {
     return (v || 0).toFixed(2);
   }
@@ -87,7 +66,7 @@
           HIGHWAYS = feats;
           return HIGHWAYS;
         } catch (e) {
-          // try next candidate
+          // try next
         }
       }
       HIGHWAYS = [];
@@ -122,14 +101,14 @@
       }
     }
 
-    // Only accept if reasonably near (~1 km, very rough)
+    // Only accept if reasonably near (~1 km in degree-space rough units)
     const MAX_DEG2 = 0.01 * 0.01;
     if (bestName && bestDist2 <= MAX_DEG2) return bestName;
     return '';
   }
 
   // Prefer ORS step.name/road; otherwise try to parse a street from instruction.
-  // We *avoid* returning generic phrases like "Keep left" etc.
+  // We avoid generic phrases like "Keep left" – only capture "onto/on/via X".
   function stepNameNatural(step) {
     if (!step) return '';
     const primary = normalizeName(step.name || step.road);
@@ -138,7 +117,6 @@
     const instr = cleanHtml(step.instruction || '');
     if (!instr) return '';
 
-    // Patterns like "Turn left onto Queen St W", "Continue on Spadina Ave"
     let m = instr.match(/\bonto\s+([^,]+?)(?=\s+for\b|,|$)/i);
     if (!m) m = instr.match(/\bon\s+([^,]+?)(?=\s+for\b|,|$)/i);
     if (!m) m = instr.match(/\bvia\s+([^,]+?)(?=\s+for\b|,|$)/i);
@@ -158,20 +136,78 @@
     return out;
   }
 
+  function movementsToText(movs) {
+    return movs.map(m => `${m.dir} ${m.name}`).join('; ');
+  }
+
+  function splitZoneLabel(label) {
+    if (!label) return { name: '', id: '' };
+    const s = String(label);
+    const m = s.match(/(\d+)/);
+    if (!m) return { name: s.trim(), id: '' };
+    const id = m[1];
+    const name = s.replace(m[0], '').replace(/[-#:]/, '').trim() || s.trim();
+    return { name, id };
+  }
+
+  // ===== Direction + movement extraction =====
+
   /**
-   * Build NB/EB/SB/WB + street name movements from ORS steps.
-   * No distance filtering – we just care about the order of streets.
+   * Determine NB/EB/SB/WB from overall geometry of the step
+   * (whichever axis has the larger net change).
+   */
+  function directionFromSegment(coords, sIdx, eIdx) {
+    const first = coords[sIdx];
+    const last  = coords[eIdx];
+    if (!first || !last) return 'NB';
+
+    const dLat = last[1] - first[1];
+    const dLon = last[0] - first[0];
+
+    if (Math.abs(dLat) >= Math.abs(dLon)) {
+      // More north–south than east–west
+      return dLat >= 0 ? 'NB' : 'SB';
+    } else {
+      // More east–west
+      return dLon >= 0 ? 'EB' : 'WB';
+    }
+  }
+
+  /**
+   * Build movements from ORS steps:
+   * - drop tiny "touch" segments (< MIN_SEG_M meters),
+   * - use overall step orientation for NB/EB/SB/WB,
+   * - use ORS name / parsed instruction / nearest highway,
+   * - merge consecutive identical (dir + street).
    */
   function buildMovementsFromDirections(coords, steps) {
     if (!coords || !coords.length || !steps || !steps.length) return [];
 
     const lastIdx = coords.length - 1;
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const MIN_SEG_M = 30; // ignore ultra-short ghost segments
 
     const rawMovs = [];
 
     for (const step of steps) {
       if (!step) continue;
+
+      let distanceM = Number(step.distance);
+      if (!isFiniteNum(distanceM) || distanceM <= 0) {
+        // Fallback if distance is missing: sum haversine along subsegment
+        distanceM = 0;
+        const wpFallback = step.way_points || step.wayPoints || [];
+        const a = wpFallback[0] ?? 0;
+        const b = wpFallback[1] ?? lastIdx;
+        const s = clamp(a, 0, lastIdx);
+        const e = clamp(b, s, lastIdx);
+        for (let i = s + 1; i <= e; i++) {
+          distanceM += haversineMeters(coords[i - 1], coords[i]);
+        }
+      }
+
+      // Drop very short segments to avoid "ghost" touch streets
+      if (!isFiniteNum(distanceM) || distanceM < MIN_SEG_M) continue;
 
       const wp = step.way_points || step.wayPoints;
       if (!wp || wp.length < 2) continue;
@@ -180,10 +216,12 @@
       let eIdx = clamp(wp[1], 0, lastIdx);
       if (eIdx === sIdx && eIdx < lastIdx) eIdx = sIdx + 1;
 
-      // Name from ORS fields or instruction
+      // Direction based on overall geometry of the step
+      const dir = directionFromSegment(coords, sIdx, eIdx);
+
+      // Street name
       let name = stepNameNatural(step);
 
-      // Fallback: nearest highway
       if (!name) {
         const midIdx = Math.floor((sIdx + eIdx) / 2);
         const mid = coords[midIdx] || coords[sIdx] || coords[eIdx];
@@ -193,26 +231,12 @@
         }
       }
 
-      if (!name) continue; // skip unnamed, un-snapped segments
-
-      // Direction based on bearing along this part of the geometry
-      let bearing = 0;
-      let found = false;
-      for (let i = eIdx; i > sIdx; i--) {
-        const bDeg = bearingDeg(coords[i - 1], coords[i]);
-        if (isFiniteNum(bDeg)) {
-          bearing = bDeg;
-          found = true;
-          break;
-        }
-      }
-      if (!found) bearing = bearingDeg(coords[sIdx], coords[eIdx]);
-      const dir = boundFrom(bearing);
+      if (!name) continue; // still unnamed – skip
 
       rawMovs.push({ dir, name });
     }
 
-    // Merge consecutive identical (dir + name) segments
+    // Merge consecutive identical entries
     const merged = [];
     for (const m of rawMovs) {
       if (!m) continue;
@@ -221,30 +245,11 @@
         continue;
       }
       const last = merged[merged.length - 1];
-      if (last.dir === m.dir && last.name === m.name) {
-        // already represented
-        continue;
-      }
+      if (last.dir === m.dir && last.name === m.name) continue;
       merged.push({ dir: m.dir, name: m.name });
     }
 
     return merged;
-  }
-
-  // Turn movement list into text like "WB Queen St W; NB Spadina Rd; ..."
-  function movementsToText(movs) {
-    return movs.map(m => `${m.dir} ${m.name}`).join('; ');
-  }
-
-  // Split zone labels into city + numeric ID, if possible.
-  function splitZoneLabel(label) {
-    if (!label) return { name: '', id: '' };
-    const s = String(label);
-    const m = s.match(/(\d+)/);
-    if (!m) return { name: s.trim(), id: '' };
-    const id = m[1];
-    const name = s.replace(m[0], '').replace(/[-#:]/, '').trim() || s.trim();
-    return { name, id };
   }
 
   // ===== Convert a single trip into HTML + CSV row =====
@@ -383,7 +388,6 @@
       return;
     }
 
-    // Preload highway data for snapping unnamed segments
     await loadHighways();
 
     const { html: cardsHtml, rows } = buildReport(cache);
@@ -623,7 +627,6 @@
     }
   }
 
-  // Public hook if you ever want to open programmatically
   global.Report = {
     open: openReportTab,
     print: openReportTab
