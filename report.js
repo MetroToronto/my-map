@@ -122,15 +122,14 @@
       }
     }
 
-    // Only accept if reasonably near (~1 km in degree-space rough units)
+    // Only accept if reasonably near (~1 km, very rough)
     const MAX_DEG2 = 0.01 * 0.01;
     if (bestName && bestDist2 <= MAX_DEG2) return bestName;
     return '';
   }
 
-  // Prefer ORS step.name / road; otherwise try to parse a road from instruction
-  // (e.g. "Turn left onto Queen St W"). We *don't* return generic phrases
-  // like "Keep left" anymore.
+  // Prefer ORS step.name/road; otherwise try to parse a street from instruction.
+  // We *avoid* returning generic phrases like "Keep left" etc.
   function stepNameNatural(step) {
     if (!step) return '';
     const primary = normalizeName(step.name || step.road);
@@ -139,29 +138,12 @@
     const instr = cleanHtml(step.instruction || '');
     if (!instr) return '';
 
-    // Look for "onto NAME", "on NAME", or "via NAME".
+    // Patterns like "Turn left onto Queen St W", "Continue on Spadina Ave"
     let m = instr.match(/\bonto\s+([^,]+?)(?=\s+for\b|,|$)/i);
     if (!m) m = instr.match(/\bon\s+([^,]+?)(?=\s+for\b|,|$)/i);
     if (!m) m = instr.match(/\bvia\s+([^,]+?)(?=\s+for\b|,|$)/i);
     if (!m) return '';
     return normalizeName(m[1]);
-  }
-
-  function mergeConsecutive(movs) {
-    const out = [];
-    for (const m of movs) {
-      if (!m) continue;
-      if (!m.name || !m.km || m.km <= 0) continue;
-      if (out.length) {
-        const last = out[out.length - 1];
-        if (last.name === m.name && last.dir === m.dir) {
-          last.km += m.km;
-          continue;
-        }
-      }
-      out.push({ dir: m.dir, name: m.name, km: m.km });
-    }
-    return out;
   }
 
   function extractStepsFromFeature(feature) {
@@ -177,42 +159,43 @@
   }
 
   /**
-   * Build NB/EB/SB/WB street movements for a route.
-   * - Uses ORS step.distance for segment length.
-   * - Uses step.name OR parsed road from instruction.
-   * - Falls back to nearest highway for unnamed segments.
+   * Build NB/EB/SB/WB + street name movements from ORS steps.
+   * No distance filtering – we just care about the order of streets.
    */
   function buildMovementsFromDirections(coords, steps) {
     if (!coords || !coords.length || !steps || !steps.length) return [];
 
-    const MIN_SEG_KM = 0.03; // drop < 30 m
     const lastIdx = coords.length - 1;
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-    const result = [];
+    const rawMovs = [];
 
     for (const step of steps) {
       if (!step) continue;
 
-      let km = Number(step.distance) / 1000;
-      if (!isFiniteNum(km) || km <= 0) {
-        km = 0;
-        const wp = step.way_points || step.wayPoints || [];
-        const a = wp[0] ?? 0;
-        const b = wp[1] ?? lastIdx;
-        const startIdx = clamp(a, 0, lastIdx);
-        const endIdx   = clamp(b, startIdx, lastIdx);
-        for (let i = startIdx + 1; i <= endIdx; i++) {
-          km += haversineMeters(coords[i - 1], coords[i]) / 1000;
-        }
-      }
-      if (!isFiniteNum(km) || km < MIN_SEG_KM) continue;
+      const wp = step.way_points || step.wayPoints;
+      if (!wp || wp.length < 2) continue;
 
-      const wp = step.way_points || step.wayPoints || [];
-      let sIdx = clamp(wp[0] ?? 0, 0, lastIdx);
-      let eIdx = clamp(wp[1] ?? lastIdx, sIdx, lastIdx);
+      let sIdx = clamp(wp[0], 0, lastIdx);
+      let eIdx = clamp(wp[1], 0, lastIdx);
       if (eIdx === sIdx && eIdx < lastIdx) eIdx = sIdx + 1;
 
+      // Name from ORS fields or instruction
+      let name = stepNameNatural(step);
+
+      // Fallback: nearest highway
+      if (!name) {
+        const midIdx = Math.floor((sIdx + eIdx) / 2);
+        const mid = coords[midIdx] || coords[sIdx] || coords[eIdx];
+        if (mid && mid.length >= 2) {
+          const hName = nearestHighwayName(mid[0], mid[1]);
+          if (hName) name = hName;
+        }
+      }
+
+      if (!name) continue; // skip unnamed, un-snapped segments
+
+      // Direction based on bearing along this part of the geometry
       let bearing = 0;
       let found = false;
       for (let i = eIdx; i > sIdx; i--) {
@@ -226,31 +209,34 @@
       if (!found) bearing = bearingDeg(coords[sIdx], coords[eIdx]);
       const dir = boundFrom(bearing);
 
-      let name = stepNameNatural(step);
-
-      if (!name || name === 'Unnamed segment') {
-        const midIdx = Math.floor((sIdx + eIdx) / 2);
-        const mid = coords[midIdx] || coords[sIdx] || coords[eIdx];
-        if (mid && mid.length >= 2) {
-          const hName = nearestHighwayName(mid[0], mid[1]);
-          if (hName) name = hName;
-        }
-      }
-
-      if (!name) name = 'Unnamed segment';
-
-      result.push({ dir, name, km });
+      rawMovs.push({ dir, name });
     }
 
-    return mergeConsecutive(result);
+    // Merge consecutive identical (dir + name) segments
+    const merged = [];
+    for (const m of rawMovs) {
+      if (!m) continue;
+      if (!merged.length) {
+        merged.push({ dir: m.dir, name: m.name });
+        continue;
+      }
+      const last = merged[merged.length - 1];
+      if (last.dir === m.dir && last.name === m.name) {
+        // already represented
+        continue;
+      }
+      merged.push({ dir: m.dir, name: m.name });
+    }
+
+    return merged;
   }
 
-  // Turn movements into text like "WB Queen St W; NB Spadina Rd; ..."
+  // Turn movement list into text like "WB Queen St W; NB Spadina Rd; ..."
   function movementsToText(movs) {
     return movs.map(m => `${m.dir} ${m.name}`).join('; ');
   }
 
-  // Split zone labels into city + numeric id, if possible
+  // Split zone labels into city + numeric ID, if possible.
   function splitZoneLabel(label) {
     if (!label) return { name: '', id: '' };
     const s = String(label);
@@ -278,7 +264,7 @@
     const dirLabel = trip.reverse ? 'Destination → Origin' : 'Origin → Destination';
 
     const routeHtmlPieces = [];
-    const perRouteTexts = [];
+    const perRouteTexts   = [];
 
     features.forEach((feat, idx) => {
       const coords = feat.geometry && Array.isArray(feat.geometry.coordinates)
@@ -331,7 +317,6 @@
     });
 
     if (!routeHtmlPieces.length) {
-      // still show card with a note
       routeHtmlPieces.push('<p class="meta">(No route details available.)</p>');
     }
 
@@ -398,7 +383,7 @@
       return;
     }
 
-    // preload highway data so unnamed segments can snap to it
+    // Preload highway data for snapping unnamed segments
     await loadHighways();
 
     const { html: cardsHtml, rows } = buildReport(cache);
