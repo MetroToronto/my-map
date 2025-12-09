@@ -87,7 +87,7 @@
           HIGHWAYS = feats;
           return HIGHWAYS;
         } catch (e) {
-          // try next
+          // try next candidate
         }
       }
       HIGHWAYS = [];
@@ -128,7 +128,9 @@
     return '';
   }
 
-  // Try to pull a usable street name out of ORS step fields
+  // Prefer ORS step.name / road; otherwise try to parse a road from instruction
+  // (e.g. "Turn left onto Queen St W"). We *don't* return generic phrases
+  // like "Keep left" anymore.
   function stepNameNatural(step) {
     if (!step) return '';
     const primary = normalizeName(step.name || step.road);
@@ -137,13 +139,12 @@
     const instr = cleanHtml(step.instruction || '');
     if (!instr) return '';
 
-    // Try patterns like "Turn left onto Main St" / "Continue via Highway 401"
-    let m = instr.match(/\bonto\s+([^,]+?)(?:\s+for\b|,|$)/i);
-    if (!m) m = instr.match(/\bvia\s+([^,]+?)(?:\s+for\b|,|$)/i);
-    if (!m) m = instr.match(/\bonto\s+(.+)$/i);
-    if (!m) m = instr.match(/\bvia\s+(.+)$/i);
-    const cand = m ? m[1] : instr;
-    return normalizeName(cand);
+    // Look for "onto NAME", "on NAME", or "via NAME".
+    let m = instr.match(/\bonto\s+([^,]+?)(?=\s+for\b|,|$)/i);
+    if (!m) m = instr.match(/\bon\s+([^,]+?)(?=\s+for\b|,|$)/i);
+    if (!m) m = instr.match(/\bvia\s+([^,]+?)(?=\s+for\b|,|$)/i);
+    if (!m) return '';
+    return normalizeName(m[1]);
   }
 
   function mergeConsecutive(movs) {
@@ -176,38 +177,45 @@
   }
 
   /**
-   * Build NB/EB/SB/WB street rows from ORS coords + steps.
-   * highway snapping is used as a fallback when step names are missing.
+   * Build NB/EB/SB/WB street movements for a route.
+   * - Uses ORS step.distance for segment length.
+   * - Uses step.name OR parsed road from instruction.
+   * - Falls back to nearest highway for unnamed segments.
    */
   function buildMovementsFromDirections(coords, steps) {
     if (!coords || !coords.length || !steps || !steps.length) return [];
 
     const MIN_SEG_KM = 0.03; // drop < 30 m
+    const lastIdx = coords.length - 1;
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
     const result = [];
 
     for (const step of steps) {
       if (!step) continue;
-      const wp = step.way_points || step.wayPoints || [];
-      const a = wp[0] ?? 0;
-      const b = wp[1] ?? (coords.length - 1);
-      const startIdx = Math.max(0, Math.min(coords.length - 1, a));
-      const endIdx   = Math.max(startIdx, Math.min(coords.length - 1, b));
 
-      let distanceM = Number(step.distance);
-      if (!isFiniteNum(distanceM) || distanceM <= 0) {
-        distanceM = 0;
+      let km = Number(step.distance) / 1000;
+      if (!isFiniteNum(km) || km <= 0) {
+        km = 0;
+        const wp = step.way_points || step.wayPoints || [];
+        const a = wp[0] ?? 0;
+        const b = wp[1] ?? lastIdx;
+        const startIdx = clamp(a, 0, lastIdx);
+        const endIdx   = clamp(b, startIdx, lastIdx);
         for (let i = startIdx + 1; i <= endIdx; i++) {
-          distanceM += haversineMeters(coords[i - 1], coords[i]);
+          km += haversineMeters(coords[i - 1], coords[i]) / 1000;
         }
       }
-      const km = distanceM / 1000;
       if (!isFiniteNum(km) || km < MIN_SEG_KM) continue;
 
-      // bearing along subsegment
+      const wp = step.way_points || step.wayPoints || [];
+      let sIdx = clamp(wp[0] ?? 0, 0, lastIdx);
+      let eIdx = clamp(wp[1] ?? lastIdx, sIdx, lastIdx);
+      if (eIdx === sIdx && eIdx < lastIdx) eIdx = sIdx + 1;
+
       let bearing = 0;
       let found = false;
-      for (let i = endIdx; i > startIdx; i--) {
+      for (let i = eIdx; i > sIdx; i--) {
         const bDeg = bearingDeg(coords[i - 1], coords[i]);
         if (isFiniteNum(bDeg)) {
           bearing = bDeg;
@@ -215,15 +223,14 @@
           break;
         }
       }
-      if (!found) bearing = bearingDeg(coords[startIdx], coords[endIdx]);
+      if (!found) bearing = bearingDeg(coords[sIdx], coords[eIdx]);
       const dir = boundFrom(bearing);
 
       let name = stepNameNatural(step);
 
-      // Fallback to nearest highway centreline if we still have no name
       if (!name || name === 'Unnamed segment') {
-        const midIdx = Math.floor((startIdx + endIdx) / 2);
-        const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
+        const midIdx = Math.floor((sIdx + eIdx) / 2);
+        const mid = coords[midIdx] || coords[sIdx] || coords[eIdx];
         if (mid && mid.length >= 2) {
           const hName = nearestHighwayName(mid[0], mid[1]);
           if (hName) name = hName;
@@ -238,13 +245,12 @@
     return mergeConsecutive(result);
   }
 
-  // ===== Convert trips into HTML + CSV rows =====
-
+  // Turn movements into text like "WB Queen St W; NB Spadina Rd; ..."
   function movementsToText(movs) {
-    // For CSV: "NB Queen St W; WB Spadina Ave; ..."
     return movs.map(m => `${m.dir} ${m.name}`).join('; ');
   }
 
+  // Split zone labels into city + numeric id, if possible
   function splitZoneLabel(label) {
     if (!label) return { name: '', id: '' };
     const s = String(label);
@@ -255,6 +261,7 @@
     return { name, id };
   }
 
+  // ===== Convert a single trip into HTML + CSV row =====
   function buildTripHtmlAndRow(trip) {
     const features = Array.isArray(trip.features) ? trip.features : [];
     if (!features.length) return null;
@@ -270,18 +277,17 @@
       `${trip.destination.lon}, ${trip.destination.lat}`) || '';
     const dirLabel = trip.reverse ? 'Destination → Origin' : 'Origin → Destination';
 
-    const perRouteTexts = [];
     const routeHtmlPieces = [];
+    const perRouteTexts = [];
 
     features.forEach((feat, idx) => {
       const coords = feat.geometry && Array.isArray(feat.geometry.coordinates)
         ? feat.geometry.coordinates
         : [];
-      const steps = extractStepsFromFeature(feat);
-      const movs = buildMovementsFromDirections(coords, steps);
-      if (!movs.length) return;
+      const steps  = extractStepsFromFeature(feat);
+      const movs   = buildMovementsFromDirections(coords, steps);
 
-      const props = feat.properties || {};
+      const props   = feat.properties || {};
       const summary = props.summary ||
                       (Array.isArray(props.segments) && props.segments[0]) ||
                       {};
@@ -298,40 +304,53 @@
       if (isFiniteNum(durMin)) metaPieces.push(`${durMin.toFixed(1)} min`);
       const meta = metaPieces.length ? metaPieces.join(' · ') : '';
 
-      const linesHtml = movs.map(m =>
-        `<tr><td>${escapeHtml(m.dir || '')}</td><td>${escapeHtml(m.name || '')}</td><td style="text-align:right">${km2(m.km)}</td></tr>`
-      ).join('');
+      let directionsText = '';
+      if (movs.length) {
+        directionsText = movementsToText(movs);
+      } else {
+        directionsText = '(No named street segments found for this route.)';
+      }
 
       routeHtmlPieces.push(`
         <h3>${escapeHtml(routeLabel)}</h3>
         ${meta ? `<p class="meta">${escapeHtml(meta)}</p>` : ''}
         <table>
-          <thead><tr><th>Dir</th><th>Street</th><th style="text-align:right">km</th></tr></thead>
-          <tbody>${linesHtml}</tbody>
+          <thead>
+            <tr><th style="width:90px;">Route</th><th>Street-by-street</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>${escapeHtml(routeLabel)}</td>
+              <td>${escapeHtml(directionsText)}</td>
+            </tr>
+          </tbody>
         </table>
       `);
 
-      perRouteTexts.push(movementsToText(movs));
+      perRouteTexts.push(directionsText);
     });
 
-    if (!routeHtmlPieces.length) return null;
+    if (!routeHtmlPieces.length) {
+      // still show card with a note
+      routeHtmlPieces.push('<p class="meta">(No route details available.)</p>');
+    }
 
     const metaLine = originLabel && destLabel
       ? `${originLabel} → ${destLabel} (${dirLabel})`
       : '';
 
-    // CSV row pieces
+    // CSV row data
     let name, id;
     if (isPD) {
       name = trip.name || trip.key || 'Planning District';
-      id = trip.key || '';
+      id   = trip.key || '';
     } else {
       const sp = splitZoneLabel(trip.label || '');
       name = sp.name || trip.label || 'Planning Zone';
-      id = sp.id;
+      id   = sp.id;
     }
 
-    const directionsText = perRouteTexts.map((txt, i) => {
+    const directionsForCsv = perRouteTexts.map((txt, i) => {
       if (perRouteTexts.length === 1) return txt;
       return `Route ${i + 1}: ${txt}`;
     }).join(' | ');
@@ -346,7 +365,7 @@
 
     return {
       html: cardHtml,
-      csvRow: { name, id, directions: directionsText }
+      csvRow: { name, id, directions: directionsForCsv }
     };
   }
 
@@ -356,7 +375,7 @@
     }
 
     const cards = [];
-    const rows = [];
+    const rows  = [];
 
     cache.trips.forEach(trip => {
       const built = buildTripHtmlAndRow(trip);
@@ -379,7 +398,7 @@
       return;
     }
 
-    // Make sure highways are loaded before we interpret steps
+    // preload highway data so unnamed segments can snap to it
     await loadHighways();
 
     const { html: cardsHtml, rows } = buildReport(cache);
@@ -398,7 +417,7 @@
       originObj.query ||
       'selected origin';
 
-    const now = new Date();
+    const now   = new Date();
     const dtStr = now.toLocaleString(undefined, {
       dateStyle: 'medium',
       timeStyle: 'short'
@@ -474,6 +493,7 @@
           border: 1px solid #ddd;
           padding: 6px 8px;
           font-size: 12px;
+          vertical-align: top;
         }
         thead th {
           background: #f7f7f7;
@@ -569,7 +589,6 @@
       return;
     }
 
-    // Build contents asynchronously, but the window is opened synchronously
     buildReportWindow(w).catch(function (e) {
       console.error('Report build failed:', e);
       try {
@@ -619,10 +638,10 @@
     }
   }
 
-  // Expose a hook if you ever want to open programmatically
+  // Public hook if you ever want to open programmatically
   global.Report = {
     open: openReportTab,
-    print: openReportTab   // backward-compatible name
+    print: openReportTab
   };
 
   document.addEventListener('DOMContentLoaded', function () {
