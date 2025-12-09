@@ -1,7 +1,9 @@
 (function (global) {
   'use strict';
 
-  // ===== Basic geo helpers =====
+  /******************************************************************
+   * Basic geo helpers
+   ******************************************************************/
   function toRad(d) { return d * Math.PI / 180; }
   function isFiniteNum(n) { return Number.isFinite(n) && !Number.isNaN(n); }
 
@@ -16,6 +18,52 @@
                Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
     const c = 2 * Math.atan2(Math.sqrt(sa), Math.sqrt(1 - sa));
     return R * c;
+  }
+
+  function bearingDeg(a, b) {
+    if (!a || !b || a.length < 2 || b.length < 2) return 0;
+    const lon1 = toRad(a[0]), lat1 = toRad(a[1]);
+    const lon2 = toRad(b[0]), lat2 = toRad(b[1]);
+    const dLon = lon2 - lon1;
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.cos(lat2) -
+              Math.sin(lat1) * Math.sin(lat2) * Math.cos(dLon);
+    let brng = Math.atan2(y, x) * 180 / Math.PI;
+    if (!isFiniteNum(brng)) return 0;
+    brng = (brng + 360) % 360;
+    return brng;
+  }
+
+  function circularMean(degArr) {
+    if (!degArr || !degArr.length) return 0;
+    const sx = degArr.reduce((a, d) => a + Math.cos(toRad(d)), 0);
+    const sy = degArr.reduce((a, d) => a + Math.sin(toRad(d)), 0);
+    return (Math.atan2(sy, sx) * 180 / Math.PI + 360) % 360;
+  }
+
+  function boundFrom(deg) {
+    if (deg >= 315 || deg < 45) return 'NB';
+    if (deg >= 45 && deg < 135) return 'EB';
+    if (deg >= 135 && deg < 225) return 'SB';
+    return 'WB';
+  }
+
+  function resampleByDistance(coords, everyM) {
+    if (!coords || coords.length < 2) return coords || [];
+    const out = [coords[0]];
+    let acc = 0;
+    for (let i = 1; i < coords.length; i++) {
+      const d = haversineMeters(coords[i - 1], coords[i]);
+      acc += d;
+      if (acc >= everyM) {
+        out.push(coords[i]);
+        acc = 0;
+      }
+    }
+    if (out[out.length - 1] !== coords[coords.length - 1]) {
+      out.push(coords[coords.length - 1]);
+    }
+    return out;
   }
 
   function km2(v) {
@@ -42,7 +90,9 @@
     return s;
   }
 
-  // ===== Highway centreline support =====
+  /******************************************************************
+   * Highway centreline support (for highway naming fallback)
+   ******************************************************************/
   let HIGHWAYS = null;
   let HIGHWAYS_PROMISE = null;
 
@@ -101,29 +151,40 @@
       }
     }
 
-    // Only accept if reasonably near (~1 km in degree-space rough units)
+    // Only accept if reasonably near (~1 km in very rough degree units)
     const MAX_DEG2 = 0.01 * 0.01;
     if (bestName && bestDist2 <= MAX_DEG2) return bestName;
     return '';
   }
 
-  // Prefer ORS step.name/road; otherwise try to parse a street from instruction.
-  // We avoid generic phrases like "Keep left" – only capture "onto/on/via X".
-  function stepNameNatural(step) {
+  /******************************************************************
+   * Step name helpers
+   ******************************************************************/
+  function stepStreetName(step) {
     if (!step) return '';
-    const primary = normalizeName(step.name || step.road);
-    if (primary) return primary;
 
+    // 1) Direct field
+    let name = normalizeName(step.name || step.road);
+    if (name) return name;
+
+    // 2) Parse instruction
     const instr = cleanHtml(step.instruction || '');
-    if (!instr) return '';
+    if (instr) {
+      let m = instr.match(/\bonto\s+([^,]+?)(?=\s+for\b|,|$)/i);
+      if (!m) m = instr.match(/\bon\s+([^,]+?)(?=\s+for\b|,|$)/i);
+      if (!m) m = instr.match(/\bvia\s+([^,]+?)(?=\s+for\b|,|$)/i);
+      if (m) {
+        name = normalizeName(m[1]);
+        if (name) return name;
+      }
+    }
 
-    let m = instr.match(/\bonto\s+([^,]+?)(?=\s+for\b|,|$)/i);
-    if (!m) m = instr.match(/\bon\s+([^,]+?)(?=\s+for\b|,|$)/i);
-    if (!m) m = instr.match(/\bvia\s+([^,]+?)(?=\s+for\b|,|$)/i);
-    if (!m) return '';
-    return normalizeName(m[1]);
+    return '';
   }
 
+  /******************************************************************
+   * Extract ORS steps from feature
+   ******************************************************************/
   function extractStepsFromFeature(feature) {
     if (!feature || !feature.properties) return [];
     const props = feature.properties;
@@ -136,10 +197,87 @@
     return out;
   }
 
+  /******************************************************************
+   * Turn ORS steps into NB/EB/SB/WB + street name movements
+   ******************************************************************/
+  function buildMovementsFromDirections(coords, steps) {
+    if (!coords || !coords.length || !steps || !steps.length) return [];
+
+    const lastIdx = coords.length - 1;
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const rows = [];
+
+    for (const step of steps) {
+      if (!step) continue;
+
+      const wp = step.way_points || step.wayPoints;
+      if (!wp || wp.length < 2) continue;
+
+      let sIdx = clamp(wp[0], 0, lastIdx);
+      let eIdx = clamp(wp[1], 0, lastIdx);
+      if (eIdx === sIdx && eIdx < lastIdx) eIdx = sIdx + 1;
+
+      const seg = coords.slice(sIdx, eIdx + 1);
+      if (!seg.length || seg.length < 2) continue;
+
+      // Distance along this segment
+      let meters = 0;
+      for (let i = 1; i < seg.length; i++) {
+        meters += haversineMeters(seg[i - 1], seg[i]);
+      }
+      // ignore truly degenerate segments (< 1 m)
+      if (meters < 1) continue;
+
+      // Street name:
+      let name = stepStreetName(step);
+
+      // Fallback to nearest highway if still unnamed
+      if (!name) {
+        const midIdx = Math.floor((sIdx + eIdx) / 2);
+        const mid = coords[midIdx] || coords[sIdx] || coords[eIdx];
+        if (mid && mid.length >= 2) {
+          const hName = nearestHighwayName(mid[0], mid[1]);
+          if (hName) name = hName;
+        }
+      }
+
+      // Final fallback: raw instruction text
+      if (!name) {
+        const instr = cleanHtml(step.instruction || '');
+        if (instr) name = instr;
+      }
+      if (!name) name = 'Unnamed road';
+
+      // Direction: average bearing along the step
+      const samples = resampleByDistance(seg, 50);
+      const bearings = [];
+      for (let i = 1; i < samples.length; i++) {
+        bearings.push(bearingDeg(samples[i - 1], samples[i]));
+      }
+      const brng = bearings.length
+        ? circularMean(bearings)
+        : bearingDeg(seg[0], seg[seg.length - 1]);
+      const dir = boundFrom(brng);
+
+      const km = meters / 1000;
+      const last = rows[rows.length - 1];
+      if (last && last.name === name && last.dir === dir) {
+        last.km = +(last.km + km).toFixed(3);
+      } else {
+        rows.push({ dir, name, km: +km.toFixed(3) });
+      }
+    }
+
+    return rows;
+  }
+
   function movementsToText(movs) {
     return movs.map(m => `${m.dir} ${m.name}`).join('; ');
   }
 
+  /******************************************************************
+   * Label helpers (for CSV)
+   ******************************************************************/
   function splitZoneLabel(label) {
     if (!label) return { name: '', id: '' };
     const s = String(label);
@@ -150,109 +288,9 @@
     return { name, id };
   }
 
-  // ===== Direction + movement extraction =====
-
-  /**
-   * Determine NB/EB/SB/WB from overall geometry of the step
-   * (whichever axis has the larger net change).
-   */
-  function directionFromSegment(coords, sIdx, eIdx) {
-    const first = coords[sIdx];
-    const last  = coords[eIdx];
-    if (!first || !last) return 'NB';
-
-    const dLat = last[1] - first[1];
-    const dLon = last[0] - first[0];
-
-    if (Math.abs(dLat) >= Math.abs(dLon)) {
-      // More north–south than east–west
-      return dLat >= 0 ? 'NB' : 'SB';
-    } else {
-      // More east–west
-      return dLon >= 0 ? 'EB' : 'WB';
-    }
-  }
-
-  /**
-   * Build movements from ORS steps:
-   * - drop tiny "touch" segments (< MIN_SEG_M meters),
-   * - use overall step orientation for NB/EB/SB/WB,
-   * - use ORS name / parsed instruction / nearest highway,
-   * - merge consecutive identical (dir + street).
-   */
-  function buildMovementsFromDirections(coords, steps) {
-    if (!coords || !coords.length || !steps || !steps.length) return [];
-
-    const lastIdx = coords.length - 1;
-    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-    const MIN_SEG_M = 30; // ignore ultra-short ghost segments
-
-    const rawMovs = [];
-
-    for (const step of steps) {
-      if (!step) continue;
-
-      let distanceM = Number(step.distance);
-      if (!isFiniteNum(distanceM) || distanceM <= 0) {
-        // Fallback if distance is missing: sum haversine along subsegment
-        distanceM = 0;
-        const wpFallback = step.way_points || step.wayPoints || [];
-        const a = wpFallback[0] ?? 0;
-        const b = wpFallback[1] ?? lastIdx;
-        const s = clamp(a, 0, lastIdx);
-        const e = clamp(b, s, lastIdx);
-        for (let i = s + 1; i <= e; i++) {
-          distanceM += haversineMeters(coords[i - 1], coords[i]);
-        }
-      }
-
-      // Drop very short segments to avoid "ghost" touch streets
-      if (!isFiniteNum(distanceM) || distanceM < MIN_SEG_M) continue;
-
-      const wp = step.way_points || step.wayPoints;
-      if (!wp || wp.length < 2) continue;
-
-      let sIdx = clamp(wp[0], 0, lastIdx);
-      let eIdx = clamp(wp[1], 0, lastIdx);
-      if (eIdx === sIdx && eIdx < lastIdx) eIdx = sIdx + 1;
-
-      // Direction based on overall geometry of the step
-      const dir = directionFromSegment(coords, sIdx, eIdx);
-
-      // Street name
-      let name = stepNameNatural(step);
-
-      if (!name) {
-        const midIdx = Math.floor((sIdx + eIdx) / 2);
-        const mid = coords[midIdx] || coords[sIdx] || coords[eIdx];
-        if (mid && mid.length >= 2) {
-          const hName = nearestHighwayName(mid[0], mid[1]);
-          if (hName) name = hName;
-        }
-      }
-
-      if (!name) continue; // still unnamed – skip
-
-      rawMovs.push({ dir, name });
-    }
-
-    // Merge consecutive identical entries
-    const merged = [];
-    for (const m of rawMovs) {
-      if (!m) continue;
-      if (!merged.length) {
-        merged.push({ dir: m.dir, name: m.name });
-        continue;
-      }
-      const last = merged[merged.length - 1];
-      if (last.dir === m.dir && last.name === m.name) continue;
-      merged.push({ dir: m.dir, name: m.name });
-    }
-
-    return merged;
-  }
-
-  // ===== Convert a single trip into HTML + CSV row =====
+  /******************************************************************
+   * Convert a single trip into HTML + CSV row
+   ******************************************************************/
   function buildTripHtmlAndRow(trip) {
     const features = Array.isArray(trip.features) ? trip.features : [];
     if (!features.length) return null;
@@ -269,21 +307,21 @@
     const dirLabel = trip.reverse ? 'Destination → Origin' : 'Origin → Destination';
 
     const routeHtmlPieces = [];
-    const perRouteTexts   = [];
+    const perRouteTexts = [];
 
     features.forEach((feat, idx) => {
       const coords = feat.geometry && Array.isArray(feat.geometry.coordinates)
         ? feat.geometry.coordinates
         : [];
-      const steps  = extractStepsFromFeature(feat);
-      const movs   = buildMovementsFromDirections(coords, steps);
+      const steps = extractStepsFromFeature(feat);
+      const movs = buildMovementsFromDirections(coords, steps);
 
       const props   = feat.properties || {};
       const summary = props.summary ||
                       (Array.isArray(props.segments) && props.segments[0]) ||
                       {};
-      const distKm = Number(summary.distance) / 1000;
-      const durMin = Number(summary.duration) / 60;
+      const distKm  = Number(summary.distance) / 1000;
+      const durMin  = Number(summary.duration) / 60;
 
       const routeLabel =
         features.length === 1
@@ -365,7 +403,7 @@
     }
 
     const cards = [];
-    const rows  = [];
+    const rows = [];
 
     cache.trips.forEach(trip => {
       const built = buildTripHtmlAndRow(trip);
@@ -377,8 +415,9 @@
     return { html: cards.join(''), rows };
   }
 
-  // ===== Main print / open-tab logic =====
-
+  /******************************************************************
+   * Main print / open-tab logic
+   ******************************************************************/
   async function buildReportWindow(targetWindow) {
     const cache = global.ROUTING_CACHE;
     if (!cache || !cache.trips || !cache.trips.length) {
@@ -388,7 +427,8 @@
       return;
     }
 
-    await loadHighways();
+    // Load highway data for naming fallback (safe even if file missing)
+    await loadHighways().catch(() => {});
 
     const { html: cardsHtml, rows } = buildReport(cache);
     if (!cardsHtml) {
@@ -588,7 +628,9 @@
     });
   }
 
-  // ===== Leaflet Report control =====
+  /******************************************************************
+   * Leaflet control wiring
+   ******************************************************************/
   const ReportControl = L.Control.extend({
     options: { position: 'topleft' },
     onAdd: function () {
@@ -627,6 +669,7 @@
     }
   }
 
+  // Public API (optional)
   global.Report = {
     open: openReportTab,
     print: openReportTab
