@@ -1,13 +1,18 @@
 (function (global) {
   'use strict';
 
-  // ===== Small helpers =====
+  /******************************************************************
+   * Basic helpers
+   ******************************************************************/
   function toRad(d) { return d * Math.PI / 180; }
-  function isFiniteNum(n) { return Number.isFinite(n) && !Number.isNaN(n); }
+
+  function isFiniteNum(n) {
+    return Number.isFinite(n) && !Number.isNaN(n);
+  }
 
   function haversineMeters(a, b) {
     if (!a || !b || a.length < 2 || b.length < 2) return 0;
-    const R = 6371000; // metres
+    const R = 6371000; // m
     const lon1 = toRad(a[0]), lat1 = toRad(a[1]);
     const lon2 = toRad(b[0]), lat2 = toRad(b[1]);
     const dLat = lat2 - lat1;
@@ -16,29 +21,6 @@
                Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
     const c = 2 * Math.atan2(Math.sqrt(sa), Math.sqrt(1 - sa));
     return R * c;
-  }
-
-  // Bearing helpers are left in case we want them later, but we no longer
-  // use them for the report directions (we use a simpler axis-based method).
-  function bearingDeg(a, b) {
-    if (!a || !b || a.length < 2 || b.length < 2) return 0;
-    const lon1 = toRad(a[0]), lat1 = toRad(a[1]);
-    const lon2 = toRad(b[0]), lat2 = toRad(b[1]);
-    const dLon = lon2 - lon1;
-    const y = Math.sin(dLon) * Math.cos(lat2);
-    const x = Math.cos(lat1) * Math.cos(lat2) -
-              Math.sin(lat1) * Math.sin(lat2) * Math.cos(dLon);
-    let brng = Math.atan2(y, x) * 180 / Math.PI;
-    if (!isFiniteNum(brng)) return 0;
-    brng = (brng + 360) % 360;
-    return brng;
-  }
-
-  function boundFrom(deg) {
-    if (deg >= 315 || deg < 45) return 'NB';
-    if (deg >= 45 && deg < 135) return 'EB';
-    if (deg >= 135 && deg < 225) return 'SB';
-    return 'WB';
   }
 
   function km2(v) {
@@ -65,7 +47,101 @@
     return s;
   }
 
-  // Try to pull a usable street name out of ORS step fields
+  /******************************************************************
+   * Highway centreline support
+   ******************************************************************/
+  let HIGHWAYS = null;
+  let HIGHWAYS_PROMISE = null;
+
+  async function ensureHighwaysLoaded() {
+    if (HIGHWAYS !== null) return;
+    if (!HIGHWAYS_PROMISE) {
+      const candidates = [
+        'data/highway_centrelines.json',   // your file
+        'data/highway_centerlines.json',
+        'data/highway_centreline.json'
+      ];
+      HIGHWAYS_PROMISE = (async () => {
+        for (const path of candidates) {
+          try {
+            const res = await fetch(path);
+            if (!res.ok) continue;
+            const json = await res.json();
+            HIGHWAYS = Array.isArray(json.features) ? json.features : [];
+            return;
+          } catch (e) {
+            // try next
+          }
+        }
+        HIGHWAYS = [];
+      })();
+    }
+    await HIGHWAYS_PROMISE;
+  }
+
+  function nearestHighwayName(lon, lat) {
+    if (!HIGHWAYS || !HIGHWAYS.length) return '';
+
+    let bestName = '';
+    let bestD2 = Infinity;
+
+    for (const f of HIGHWAYS) {
+      if (!f || !f.geometry || !Array.isArray(f.geometry.coordinates)) continue;
+      const coords = f.geometry.coordinates;
+      const props = f.properties || {};
+      const candName = normalizeName(props.Name || props.name);
+      if (!candName) continue;
+
+      for (const c of coords) {
+        if (!Array.isArray(c) || c.length < 2) continue;
+        const dx = c[0] - lon;
+        const dy = c[1] - lat;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestName = candName;
+        }
+      }
+    }
+
+    // Require being reasonably close (~200 m in degree-space rough units)
+    const MAX_DEG2 = 0.002 * 0.002;
+    if (bestName && bestD2 <= MAX_DEG2) return bestName;
+    return '';
+  }
+
+  /******************************************************************
+   * Direction + street-name helpers
+   ******************************************************************/
+  // Axis-based N/E/S/W from two lon/lat points
+  function axisCardinal(a, b) {
+    if (!a || !b || a.length < 2 || b.length < 2) return '';
+    const dLon = b[0] - a[0];
+    const dLat = b[1] - a[1];
+    if (Math.abs(dLon) < 1e-8 && Math.abs(dLat) < 1e-8) return '';
+    if (Math.abs(dLat) >= Math.abs(dLon)) {
+      return dLat >= 0 ? 'NB' : 'SB';
+    }
+    return dLon >= 0 ? 'EB' : 'WB';
+  }
+
+  // Decide direction from roughly the first 100 m of a subsegment
+  function directionFromFirst100m(segCoords) {
+    if (!segCoords || segCoords.length < 2) return '';
+    const TARGET_M = 100;
+    let acc = 0;
+    const first = segCoords[0];
+    for (let i = 1; i < segCoords.length; i++) {
+      acc += haversineMeters(segCoords[i - 1], segCoords[i]);
+      if (acc >= TARGET_M) {
+        return axisCardinal(first, segCoords[i]);
+      }
+    }
+    // If shorter than 100 m, just use start → end
+    return axisCardinal(first, segCoords[segCoords.length - 1]);
+  }
+
+  // Try to get a usable street name from ORS step
   function stepNameNatural(step) {
     if (!step) return '';
     const primary = normalizeName(step.name || step.road);
@@ -74,11 +150,11 @@
     const instr = cleanHtml(step.instruction || '');
     if (!instr) return '';
 
-    // Try patterns like "Turn left onto Main St" / "Continue via Highway 401"
     let m = instr.match(/\bonto\s+([^,]+?)(?:\s+for\b|,|$)/i);
     if (!m) m = instr.match(/\bvia\s+([^,]+?)(?:\s+for\b|,|$)/i);
     if (!m) m = instr.match(/\bonto\s+(.+)$/i);
     if (!m) m = instr.match(/\bvia\s+(.+)$/i);
+
     const cand = m ? m[1] : instr;
     return normalizeName(cand);
   }
@@ -86,8 +162,7 @@
   function mergeConsecutive(movs) {
     const out = [];
     for (const m of movs) {
-      if (!m) continue;
-      if (!m.name || !m.km || m.km <= 0) continue;
+      if (!m || !m.name || !m.km || m.km <= 0) continue;
       if (out.length) {
         const last = out[out.length - 1];
         if (last.name === m.name && last.dir === m.dir) {
@@ -100,38 +175,45 @@
     return out;
   }
 
-  // Simple axis-based NB/EB/SB/WB from two lon/lat points
-  function axisCardinal(a, b) {
-    if (!a || !b || a.length < 2 || b.length < 2) return '';
-    const dLon = b[0] - a[0];
-    const dLat = b[1] - a[1];
-    if (Math.abs(dLon) < 1e-8 && Math.abs(dLat) < 1e-8) return '';
-    if (Math.abs(dLat) >= Math.abs(dLon)) {
-      return dLat >= 0 ? 'NB' : 'SB';
-    } else {
-      return dLon >= 0 ? 'EB' : 'WB';
+  /******************************************************************
+   * ORS → movements
+   ******************************************************************/
+  function extractStepsFromFeature(feature) {
+    if (!feature || !feature.properties) return [];
+    const props = feature.properties;
+    if (Array.isArray(props.steps) && props.steps.length) return props.steps;
+    const segments = Array.isArray(props.segments) ? props.segments : [];
+    const out = [];
+    for (const seg of segments) {
+      if (seg && Array.isArray(seg.steps)) out.push(...seg.steps);
     }
+    return out;
   }
 
-  // Build NB/EB/SB/WB street rows from ORS coords + steps
+  // coords: [ [lon,lat], ... ]
+  // steps: ORS steps with way_points + distance (in km)
   function buildMovementsFromDirections(coords, steps) {
     if (!coords || !coords.length || !steps || !steps.length) return [];
 
-    const MIN_SEG_KM = 0.03; // drop < 30 m to avoid ghosts
-    const result = [];
+    const MIN_SEG_KM = 0.03; // < 30 m → ghost
+
+    const rows = [];
 
     for (const step of steps) {
       if (!step) continue;
-      const wp = step.way_points || step.wayPoints || [];
-      const a = wp[0] ?? 0;
-      const b = wp[1] ?? (coords.length - 1);
-      const startIdx = Math.max(0, Math.min(coords.length - 1, a));
-      const endIdx   = Math.max(startIdx, Math.min(coords.length - 1, b));
 
-      // ORS with units='km' → distance is already in kilometres.
+      const wp = step.way_points || step.wayPoints || [];
+      const len = coords.length;
+      const a = wp[0] ?? 0;
+      const b = wp[1] ?? (len - 1);
+      const startIdx = Math.max(0, Math.min(len - 1, a));
+      const endIdx   = Math.max(startIdx, Math.min(len - 1, b));
+
+      if (endIdx <= startIdx) continue;
+
+      // Distance: ORS uses km because we call with units='km'
       let km = Number(step.distance);
       if (!isFiniteNum(km) || km <= 0) {
-        // Fallback: compute from geometry (metres → km)
         let meters = 0;
         for (let i = startIdx + 1; i <= endIdx; i++) {
           meters += haversineMeters(coords[i - 1], coords[i]);
@@ -140,62 +222,56 @@
       }
       if (!isFiniteNum(km) || km < MIN_SEG_KM) continue;
 
-      // Direction from dominant axis of motion
-      let dir = '';
-      for (let i = endIdx; i > startIdx; i--) {
-        const d = axisCardinal(coords[i - 1], coords[i]);
-        if (d) {
-          dir = d;
-          break;
+      const segCoords = coords.slice(startIdx, endIdx + 1);
+
+      // Direction from first ~100 m
+      const dir = directionFromFirst100m(segCoords) || '';
+
+      // Street name – ORS first
+      let name = stepNameNatural(step);
+
+      // If still unnamed, try nearest highway centreline
+      if (!name) {
+        const midIdx = Math.floor((startIdx + endIdx) / 2);
+        const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
+        if (mid && mid.length >= 2) {
+          const hName = nearestHighwayName(mid[0], mid[1]);
+          if (hName) name = hName;
         }
       }
-      if (!dir && startIdx < endIdx) {
-        dir = axisCardinal(coords[startIdx], coords[endIdx]);
-      }
 
-      const name = stepNameNatural(step) || 'Unnamed segment';
-      result.push({ dir, name, km });
+      if (!name) name = 'Unnamed segment';
+
+      rows.push({ dir, name, km });
     }
 
-    return mergeConsecutive(result);
+    return mergeConsecutive(rows);
   }
 
-  function extractStepsFromFeature(feature) {
-    if (!feature || !feature.properties) return [];
-    const props = feature.properties;
-    if (Array.isArray(props.steps) && props.steps.length) return props.steps;
-    const segments = Array.isArray(props.segments) ? props.segments : [];
-    const out = [];
-    for (const seg of segments) {
-      if (seg && Array.isArray(seg.steps)) {
-        out.push(...seg.steps);
-      }
-    }
-    return out;
-  }
-
-  // Build one or more tables for a single trip (PD/PZ, 1–3 routes)
+  /******************************************************************
+   * Build HTML for one trip
+   ******************************************************************/
   function buildTablesForTrip(trip) {
-    const pieces = [];
     const features = Array.isArray(trip.features) ? trip.features : [];
     if (!features.length) return '';
+
+    const pieces = [];
 
     features.forEach((feat, idx) => {
       const coords = feat.geometry && Array.isArray(feat.geometry.coordinates)
         ? feat.geometry.coordinates
         : [];
       const steps = extractStepsFromFeature(feat);
-      const movs = buildMovementsFromDirections(coords, steps);
+      const movs  = buildMovementsFromDirections(coords, steps);
 
-      const props = feat.properties || {};
+      const props   = feat.properties || {};
       const summary = props.summary ||
                       (Array.isArray(props.segments) && props.segments[0]) ||
                       {};
 
-      // ORS distance is already in km when units='km'
+      // distance already in km (units='km')
       let distKm = Number(summary.distance);
       if (!isFiniteNum(distKm) || distKm <= 0) {
-        // Fallback: compute from geometry
         distKm = 0;
         if (coords && coords.length > 1) {
           for (let i = 1; i < coords.length; i++) {
@@ -205,7 +281,6 @@
           distKm = NaN;
         }
       }
-
       const durMin = isFiniteNum(summary.duration)
         ? Number(summary.duration) / 60
         : NaN;
@@ -215,28 +290,37 @@
           ? 'Route'
           : (idx === 0 ? 'Route 1 (fastest)' : `Route ${idx + 1}`);
 
-      let linesHtml;
-      if (!movs.length) {
-        linesHtml = `<tr><td colspan="3" style="font-style:italic;color:#777;">
-          (No named street segments found for this route.)
-        </td></tr>`;
-      } else {
-        linesHtml = movs.map(m =>
-          `<tr><td>${escapeHtml(m.dir || '')}</td><td>${escapeHtml(m.name || '')}</td><td style="text-align:right">${km2(m.km)}</td></tr>`
-        ).join('');
-      }
-
       const metaPieces = [];
       if (isFiniteNum(distKm)) metaPieces.push(`${km2(distKm)} km`);
       if (isFiniteNum(durMin)) metaPieces.push(`${durMin.toFixed(1)} min`);
       const meta = metaPieces.length ? metaPieces.join(' · ') : '';
 
+      let bodyHtml;
+      if (!movs.length) {
+        bodyHtml = `
+          <tr>
+            <td colspan="3" style="font-style:italic;color:#777;">
+              (No named street segments found for this route.)
+            </td>
+          </tr>`;
+      } else {
+        bodyHtml = movs.map(m =>
+          `<tr>
+             <td>${escapeHtml(m.dir || '')}</td>
+             <td>${escapeHtml(m.name || '')}</td>
+             <td style="text-align:right">${km2(m.km)}</td>
+           </tr>`
+        ).join('');
+      }
+
       pieces.push(`
         <h3>${escapeHtml(routeLabel)}</h3>
         ${meta ? `<p class="meta">${escapeHtml(meta)}</p>` : ''}
         <table>
-          <thead><tr><th>Dir</th><th>Street</th><th style="text-align:right">km</th></tr></thead>
-          <tbody>${linesHtml}</tbody>
+          <thead>
+            <tr><th>Dir</th><th>Street</th><th style="text-align:right">km</th></tr>
+          </thead>
+          <tbody>${bodyHtml}</tbody>
         </table>
       `);
     });
@@ -247,39 +331,47 @@
   function buildCardsHtml(cache) {
     if (!cache || !Array.isArray(cache.trips) || !cache.trips.length) return '';
 
-    return cache.trips.map((trip) => {
-      const isPD = trip.type === 'PD';
+    return cache.trips.map(trip => {
+      const isPD  = trip.type === 'PD';
       const title = isPD
         ? (trip.name || trip.key || 'Planning District')
         : (trip.label || 'Planning Zone');
 
-      const originLabel = trip.origin && (trip.origin.label || `${trip.origin.lon},${trip.origin.lat}`) || '';
-      const destLabel   = trip.destination && (trip.destination.label || `${trip.destination.lon},${trip.destination.lat}`) || '';
+      const originLabel = trip.origin && (trip.origin.label ||
+        `${trip.origin.lon}, ${trip.origin.lat}`) || '';
+      const destLabel   = trip.destination && (trip.destination.label ||
+        `${trip.destination.lon}, ${trip.destination.lat}`) || '';
       const dirLabel    = trip.reverse ? 'Destination → Origin' : 'Origin → Destination';
-
-      const pathsHtml = buildTablesForTrip(trip);
-      if (!pathsHtml) return '';
 
       const metaLine = originLabel && destLabel
         ? `${originLabel} → ${destLabel} (${dirLabel})`
         : '';
 
+      const tables = buildTablesForTrip(trip);
+      if (!tables) return '';
+
       return `
         <div class="card">
           <h2>${escapeHtml(title)}</h2>
           ${metaLine ? `<p class="meta">${escapeHtml(metaLine)}</p>` : ''}
-          ${pathsHtml}
+          ${tables}
         </div>
       `;
     }).join('');
   }
 
-  function printReport() {
+  /******************************************************************
+   * Print / open report
+   ******************************************************************/
+  async function printReport() {
     const cache = global.ROUTING_CACHE;
     if (!cache || !cache.trips || !cache.trips.length) {
       alert('No trips available. Please generate trips first.');
       return;
     }
+
+    // Make sure highway centreline data is ready (for naming)
+    await ensureHighwaysLoaded().catch(() => {});
 
     const cardsHtml = buildCardsHtml(cache);
     if (!cardsHtml) {
@@ -293,7 +385,9 @@
         body {
           margin: 0;
           padding: 16px 20px;
-          font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+                Roboto, Helvetica, Arial, sans-serif;
+          background: #fafafa;
         }
         h1 {
           font-size: 20px;
@@ -316,11 +410,13 @@
           width: 100%;
           border-collapse: collapse;
           margin-bottom: 16px;
+          background: #fff;
         }
         th, td {
           border: 1px solid #ddd;
           padding: 6px 8px;
           font-size: 12px;
+          vertical-align: top;
         }
         thead th {
           background: #f7f7f7;
@@ -330,6 +426,9 @@
           margin-bottom: 22px;
           padding-bottom: 8px;
           border-bottom: 1px solid #eee;
+          background: #fff;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+          padding: 10px 12px 12px 12px;
         }
       </style>
     `;
@@ -340,9 +439,12 @@
       return;
     }
 
-    const title = cache.mode === 'PZ'
-      ? 'Zone Trip Street Report'
-      : 'PD Trip Street Report';
+    const originObj = global.ROUTING_ORIGIN || {};
+    const originLabel =
+      originObj.label || originObj.name || originObj.address ||
+      originObj.query || 'selected origin';
+
+    const title = `Trip Route Distribution for ${originLabel}`;
 
     w.document.write(
       '<!doctype html><html><head><meta charset="utf-8">' +
@@ -351,13 +453,14 @@
       '</head><body>' +
       '<h1>' + escapeHtml(title) + '</h1>' +
       cardsHtml +
-      '<script>window.onload = function(){ window.print(); }<\/script>' +
       '</body></html>'
     );
     w.document.close();
   }
 
-  // ===== Leaflet Report control =====
+  /******************************************************************
+   * Leaflet control wiring
+   ******************************************************************/
   const ReportControl = L.Control.extend({
     options: { position: 'topleft' },
     onAdd: function () {
@@ -396,7 +499,7 @@
     }
   }
 
-  // Expose a simple hook if you ever want to call it manually
+  // Simple API if you ever need it
   global.Report = {
     print: printReport
   };
