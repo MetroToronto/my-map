@@ -125,20 +125,61 @@
     return dLon >= 0 ? 'EB' : 'WB';
   }
 
-  // Decide direction from roughly the first 100 m of a subsegment
-  function directionFromFirst100m(segCoords) {
+  // Decide direction using the segment geometry:
+  // - if total length < 150 m → use start→end
+  // - else → use a length-weighted average of Δlon/Δlat over the middle 50% of the step
+  function directionFromSegment(segCoords) {
     if (!segCoords || segCoords.length < 2) return '';
-    const TARGET_M = 100;
-    let acc = 0;
-    const first = segCoords[0];
-    for (let i = 1; i < segCoords.length; i++) {
-      acc += haversineMeters(segCoords[i - 1], segCoords[i]);
-      if (acc >= TARGET_M) {
-        return axisCardinal(first, segCoords[i]);
-      }
+
+    // Compute lengths per small edge
+    const n = segCoords.length;
+    const lens = new Array(n - 1);
+    let total = 0;
+    for (let i = 1; i < n; i++) {
+      const d = haversineMeters(segCoords[i - 1], segCoords[i]);
+      lens[i - 1] = d;
+      total += d;
     }
-    // If shorter than 100 m, just use start → end
-    return axisCardinal(first, segCoords[segCoords.length - 1]);
+
+    if (total < 1) return '';
+
+    // Very short → just use overall displacement
+    if (total < 150) {
+      return axisCardinal(segCoords[0], segCoords[n - 1]);
+    }
+
+    // Longer segments: consider middle 50% (25%–75% of length)
+    const winStart = total * 0.25;
+    const winEnd   = total * 0.75;
+
+    let acc = 0;
+    let dxSum = 0;
+    let dySum = 0;
+
+    for (let i = 1; i < n; i++) {
+      const d = lens[i - 1];
+      const mid = acc + d / 2;
+      if (mid >= winStart && mid <= winEnd) {
+        const a = segCoords[i - 1];
+        const b = segCoords[i];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        dxSum += dx * d;
+        dySum += dy * d;
+      }
+      acc += d;
+    }
+
+    if (Math.abs(dxSum) < 1e-12 && Math.abs(dySum) < 1e-12) {
+      // Fallback: overall displacement
+      return axisCardinal(segCoords[0], segCoords[n - 1]);
+    }
+
+    // Decide axis from weighted vector
+    if (Math.abs(dySum) >= Math.abs(dxSum)) {
+      return dySum >= 0 ? 'NB' : 'SB';
+    }
+    return dxSum >= 0 ? 'EB' : 'WB';
   }
 
   const GENERIC_INSTR_RE = /^(keep (left|right)|slight (left|right)|turn (left|right)|continue\b|take (the )?ramp\b|enter (the )?roundabout\b)$/i;
@@ -227,7 +268,7 @@
       if (!isFiniteNum(km) || km < MIN_SEG_KM) continue;
 
       const segCoords = coords.slice(startIdx, endIdx + 1);
-      const dir = directionFromFirst100m(segCoords) || '';
+      const dir = directionFromSegment(segCoords) || '';
 
       // Base name from ORS
       let name = stepNameNatural(step);
