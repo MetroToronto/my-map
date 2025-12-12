@@ -138,7 +138,7 @@
     return dLon >= 0 ? 'EB' : 'WB';
   }
 
-  // 100–300 m style rule for long steps
+  // 150–450 m window rule for long steps
   function directionFromSegment(segCoords) {
     if (!segCoords || segCoords.length < 2) return '';
 
@@ -153,20 +153,12 @@
     if (total < 1) return '';
 
     // Very short segments → simple start→end
-    if (total < 120) {
+    if (total < 150) {
       return axisCardinal(segCoords[0], segCoords[n - 1]);
     }
 
-    let winStart, winEnd;
-    if (total <= 300) {
-      // For 120–300 m, use middle 50%
-      winStart = total * 0.25;
-      winEnd   = total * 0.75;
-    } else {
-      // For >300 m, use fixed 100–300 m window from the start
-      winStart = 100;
-      winEnd   = 300;
-    }
+    const winStart = 150;
+    const winEnd = Math.min(total, 450);
 
     let acc = 0;
     let dxSum = 0;
@@ -304,7 +296,7 @@
       const endIdx   = Math.max(startIdx, Math.min(len - 1, b));
       if (endIdx <= startIdx) continue;
 
-      let km = Number(step.distance); // ORS distance already in km (units='km')
+      let km = Number(step.distance); // ORS distance in km
       if (!isFiniteNum(km) || km <= 0) {
         let meters = 0;
         for (let i = startIdx + 1; i <= endIdx; i++) {
@@ -340,18 +332,20 @@
   }
 
   /******************************************************************
-   * Build HTML for one trip
+   * Build summary table for one trip
    ******************************************************************/
   function buildTablesForTrip(trip) {
     const features = Array.isArray(trip.features) ? trip.features : [];
     if (!features.length) return '';
 
-    const pieces = [];
+    const rows = [];
 
     features.forEach((feat, idx) => {
       const coords = feat.geometry && Array.isArray(feat.geometry.coordinates)
         ? feat.geometry.coordinates
         : [];
+      if (!coords.length) return;
+
       const steps = extractStepsFromFeature(feat);
       const movs  = buildMovementsFromDirections(coords, steps);
 
@@ -380,42 +374,57 @@
           ? 'Route'
           : (idx === 0 ? 'Route 1 (fastest)' : `Route ${idx + 1}`);
 
-      const metaPieces = [];
-      if (isFiniteNum(distKm)) metaPieces.push(`${km2(distKm)} km`);
-      if (isFiniteNum(durMin)) metaPieces.push(`${durMin.toFixed(1)} min`);
-      const meta = metaPieces.length ? metaPieces.join(' · ') : '';
-
-      let bodyHtml;
-      if (!movs.length) {
-        bodyHtml = `
-          <tr>
-            <td colspan="3" style="font-style:italic;color:#777;">
-              (No named street segments found for this route.)
-            </td>
-          </tr>`;
-      } else {
-        bodyHtml = movs.map(m =>
-          `<tr>
-             <td>${escapeHtml(m.dir || '')}</td>
-             <td>${escapeHtml(m.name || '')}</td>
-             <td style="text-align:right">${km2(m.km)}</td>
-           </tr>`
-        ).join('');
+      // Overall trip heading: first→last coord
+      let heading = '';
+      if (coords.length >= 2) {
+        const overall = axisCardinal(coords[0], coords[coords.length - 1]);
+        if (overall) heading = overall.charAt(0); // N / S / E / W
       }
 
-      pieces.push(`
-        <h3>${escapeHtml(routeLabel)}</h3>
-        ${meta ? `<p class="meta">${escapeHtml(meta)}</p>` : ''}
-        <table>
-          <thead>
-            <tr><th>Dir</th><th>Street</th><th style="text-align:right">km</th></tr>
-          </thead>
-          <tbody>${bodyHtml}</tbody>
-        </table>
-      `);
+      let desc;
+      if (!movs.length) {
+        desc = `${routeLabel}: (No named street segments found for this route.)`;
+      } else {
+        const pieces = movs.map(m => {
+          const dirPart = m.dir ? (m.dir + ' ') : '';
+          return `${dirPart}${m.name} (${km2(m.km)} km)`;
+        });
+        desc = `${routeLabel}: ` + pieces.join(', ');
+      }
+
+      rows.push({
+        heading,
+        desc,
+        distKm,
+        durMin
+      });
     });
 
-    return pieces.join('');
+    if (!rows.length) return '';
+
+    const bodyHtml = rows.map(r => `
+      <tr>
+        <td>${escapeHtml(r.heading || '')}</td>
+        <td>${escapeHtml(r.desc || '')}</td>
+        <td style="text-align:right">${isFiniteNum(r.distKm) ? km2(r.distKm) : ''}</td>
+        <td style="text-align:right">${isFiniteNum(r.durMin) ? r.durMin.toFixed(1) : ''}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <h3>Routes</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Trip dir</th>
+            <th>Street-by-street</th>
+            <th style="text-align:right">Total km</th>
+            <th style="text-align:right">Total min</th>
+          </tr>
+        </thead>
+        <tbody>${bodyHtml}</tbody>
+      </table>
+    `;
   }
 
   function buildCardsHtml(cache) {
@@ -437,14 +446,14 @@
         ? `${originLabel} → ${destLabel} (${dirLabel})`
         : '';
 
-      const tables = buildTablesForTrip(trip);
-      if (!tables) return '';
+      const tableHtml = buildTablesForTrip(trip);
+      if (!tableHtml) return '';
 
       return `
         <div class="card">
           <h2>${escapeHtml(title)}</h2>
           ${metaLine ? `<p class="meta">${escapeHtml(metaLine)}</p>` : ''}
-          ${tables}
+          ${tableHtml}
         </div>
       `;
     }).join('');
@@ -467,6 +476,31 @@
       alert('Unable to build report. Trip data is missing or incomplete.');
       return;
     }
+
+    // Determine whether these are PD or PZ trips
+    let hasPD = false, hasPZ = false;
+    for (const t of cache.trips) {
+      if (t && t.type === 'PD') hasPD = true;
+      if (t && t.type === 'PZ') hasPZ = true;
+    }
+    let targetLabel;
+    if (hasPD && !hasPZ) targetLabel = 'Planning Districts';
+    else if (!hasPD && hasPZ) targetLabel = 'Traffic Zones';
+    else targetLabel = 'Planning Districts / Traffic Zones';
+
+    const originObj = global.ROUTING_ORIGIN || {};
+    const originLabel =
+      originObj.label || originObj.name || originObj.address ||
+      originObj.query || 'selected origin';
+
+    // Shorten to "number + street" (first two comma-separated parts)
+    let originShort = originLabel;
+    const parts = originLabel.split(',');
+    if (parts.length >= 2) {
+      originShort = (parts[0] + ' ' + parts[1]).replace(/\s+/g, ' ').trim();
+    }
+
+    const title = `Trip Route Distribution for ${originShort} to ${targetLabel}`;
 
     const css = `
       <style>
@@ -527,13 +561,6 @@
       alert('Popup blocked. Please allow popups for this site to print the report.');
       return;
     }
-
-    const originObj = global.ROUTING_ORIGIN || {};
-    const originLabel =
-      originObj.label || originObj.name || originObj.address ||
-      originObj.query || 'selected origin';
-
-    const title = `Trip Route Distribution for ${originLabel}`;
 
     w.document.write(
       '<!doctype html><html><head><meta charset="utf-8">' +
