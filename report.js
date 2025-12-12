@@ -104,8 +104,8 @@
       }
     }
 
-    // Require being reasonably close (~200 m in degree-space rough units)
-    const MAX_DEG2 = 0.002 * 0.002;
+    // Require being reasonably close (~500 m in rough degree units)
+    const MAX_DEG2 = 0.005 * 0.005;
     if (bestName && bestD2 <= MAX_DEG2) return bestName;
     return '';
   }
@@ -141,22 +141,28 @@
     return axisCardinal(first, segCoords[segCoords.length - 1]);
   }
 
-  // Try to get a usable street name from ORS step
+  const GENERIC_INSTR_RE = /^(keep (left|right)|slight (left|right)|turn (left|right)|continue\b|take (the )?ramp\b|enter (the )?roundabout\b)$/i;
+
+  // Try to get a usable street name from ORS step (without highways yet)
   function stepNameNatural(step) {
     if (!step) return '';
-    const primary = normalizeName(step.name || step.road);
-    if (primary) return primary;
+    let name = normalizeName(step.name || step.road);
+    if (name && GENERIC_INSTR_RE.test(name)) return '';
 
-    const instr = cleanHtml(step.instruction || '');
-    if (!instr) return '';
+    if (!name) {
+      const instr = cleanHtml(step.instruction || '');
+      if (instr) {
+        let m = instr.match(/\bonto\s+([^,]+?)(?:\s+for\b|,|$)/i);
+        if (!m) m = instr.match(/\bvia\s+([^,]+?)(?:\s+for\b|,|$)/i);
+        if (!m) m = instr.match(/\bonto\s+(.+)$/i);
+        if (!m) m = instr.match(/\bvia\s+(.+)$/i);
+        const cand = m ? m[1] : instr;
+        name = normalizeName(cand);
+        if (name && GENERIC_INSTR_RE.test(name)) return '';
+      }
+    }
 
-    let m = instr.match(/\bonto\s+([^,]+?)(?:\s+for\b|,|$)/i);
-    if (!m) m = instr.match(/\bvia\s+([^,]+?)(?:\s+for\b|,|$)/i);
-    if (!m) m = instr.match(/\bonto\s+(.+)$/i);
-    if (!m) m = instr.match(/\bvia\s+(.+)$/i);
-
-    const cand = m ? m[1] : instr;
-    return normalizeName(cand);
+    return name;
   }
 
   function mergeConsecutive(movs) {
@@ -196,7 +202,6 @@
     if (!coords || !coords.length || !steps || !steps.length) return [];
 
     const MIN_SEG_KM = 0.03; // < 30 m → ghost
-
     const rows = [];
 
     for (const step of steps) {
@@ -208,7 +213,6 @@
       const b = wp[1] ?? (len - 1);
       const startIdx = Math.max(0, Math.min(len - 1, a));
       const endIdx   = Math.max(startIdx, Math.min(len - 1, b));
-
       if (endIdx <= startIdx) continue;
 
       // Distance: ORS uses km because we call with units='km'
@@ -223,11 +227,9 @@
       if (!isFiniteNum(km) || km < MIN_SEG_KM) continue;
 
       const segCoords = coords.slice(startIdx, endIdx + 1);
-
-      // Direction from first ~100 m
       const dir = directionFromFirst100m(segCoords) || '';
 
-      // Street name – ORS first
+      // Base name from ORS
       let name = stepNameNatural(step);
 
       // If still unnamed, try nearest highway centreline
@@ -240,7 +242,11 @@
         }
       }
 
-      if (!name) name = 'Unnamed segment';
+      // If *still* unnamed, finally fall back to generic instruction text
+      if (!name) {
+        const instr = cleanHtml(step.instruction || '');
+        name = instr || 'Unnamed segment';
+      }
 
       rows.push({ dir, name, km });
     }
