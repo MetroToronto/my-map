@@ -138,7 +138,7 @@
     return dLon >= 0 ? 'EB' : 'WB';
   }
 
-  // 150–450 m window rule for long steps
+  // 200–500 m window rule for long steps
   function directionFromSegment(segCoords) {
     if (!segCoords || segCoords.length < 2) return '';
 
@@ -153,12 +153,12 @@
     if (total < 1) return '';
 
     // Very short segments → simple start→end
-    if (total < 150) {
+    if (total < 200) {
       return axisCardinal(segCoords[0], segCoords[n - 1]);
     }
 
-    const winStart = 150;
-    const winEnd = Math.min(total, 450);
+    const winStart = 200;
+    const winEnd = Math.min(total, 500);
 
     let acc = 0;
     let dxSum = 0;
@@ -332,11 +332,86 @@
   }
 
   /******************************************************************
+   * Origin parsing for titles/meta
+   ******************************************************************/
+  function parseOriginLabel(label) {
+    if (!label) return { address: '', postal: '' };
+    const parts = label.split(',').map(p => p.trim()).filter(Boolean);
+    if (!parts.length) return { address: label.trim(), postal: '' };
+
+    // Detect postal code (Canadian style A1A 1A1)
+    const postalIdx = parts.findIndex(p => /[A-Z]\d[A-Z]\s*\d[A-Z]\d/i.test(p));
+    const postal = postalIdx >= 0 ? parts[postalIdx] : '';
+
+    const addrParts = postalIdx >= 0 ? parts.slice(0, postalIdx) : parts.slice();
+    if (!addrParts.length) return { address: label.trim(), postal };
+
+    // Find first part with a digit
+    let idx = addrParts.findIndex(p => /\d/.test(p));
+    if (idx < 0) idx = 0;
+
+    let addressMain = addrParts[idx];
+
+    // Special case: Highway <num> , <num> , <Street>
+    if (/Highway/i.test(addressMain) && idx + 2 < addrParts.length &&
+        /^\d+$/.test(addrParts[idx + 1])) {
+      addressMain = addressMain + ' ' + addrParts[idx + 1] + ' ' + addrParts[idx + 2];
+    } else if (/^\d+$/.test(addressMain) && idx + 1 < addrParts.length) {
+      // Pure number then street
+      addressMain = addressMain + ' ' + addrParts[idx + 1];
+    }
+
+    addressMain = addressMain.replace(/\s+/g, ' ').trim();
+    return { address: addressMain, postal: postal.replace(/\s+/g, ' ').trim() };
+  }
+
+  function pdCityMetaFromTitle(title) {
+    if (!title) return { pdText: '', cityText: '' };
+    const t = title.trim();
+    let pdText = '';
+    let cityName = '';
+
+    const m = t.match(/^PD\s+(\d+)\s+of\s+(.+)$/i);
+    if (m) {
+      pdText = 'PD: ' + m[1];
+      cityName = m[2].trim();
+    } else {
+      pdText = 'PD: ' + t;
+      cityName = t;
+    }
+
+    let cityText;
+    if (/^(City|Town|Region|County)\b/i.test(cityName)) {
+      cityText = cityName;
+    } else {
+      cityText = 'City of ' + cityName;
+    }
+    return { pdText, cityText };
+  }
+
+  /******************************************************************
    * Build summary table for one trip
    ******************************************************************/
   function buildTablesForTrip(trip) {
     const features = Array.isArray(trip.features) ? trip.features : [];
     if (!features.length) return '';
+
+    // Trip heading: based only on origin/destination lat/lon
+    let headingChar = '';
+    if (trip && trip.origin && trip.destination &&
+        isFiniteNum(trip.origin.lon) && isFiniteNum(trip.origin.lat) &&
+        isFiniteNum(trip.destination.lon) && isFiniteNum(trip.destination.lat)) {
+
+      let a = [trip.origin.lon, trip.origin.lat];
+      let b = [trip.destination.lon, trip.destination.lat];
+      if (trip.reverse) {
+        const tmp = a;
+        a = b;
+        b = tmp;
+      }
+      const h = axisCardinal(a, b);
+      headingChar = h ? h.charAt(0) : '';
+    }
 
     const rows = [];
 
@@ -374,13 +449,6 @@
           ? 'Route'
           : (idx === 0 ? 'Route 1 (fastest)' : `Route ${idx + 1}`);
 
-      // Overall trip heading: first→last coord
-      let heading = '';
-      if (coords.length >= 2) {
-        const overall = axisCardinal(coords[0], coords[coords.length - 1]);
-        if (overall) heading = overall.charAt(0); // N / S / E / W
-      }
-
       let desc;
       if (!movs.length) {
         desc = `${routeLabel}: (No named street segments found for this route.)`;
@@ -393,7 +461,7 @@
       }
 
       rows.push({
-        heading,
+        heading: headingChar,
         desc,
         distKm,
         durMin
@@ -438,13 +506,21 @@
 
       const originLabel = trip.origin && (trip.origin.label ||
         `${trip.origin.lon}, ${trip.origin.lat}`) || '';
-      const destLabel   = trip.destination && (trip.destination.label ||
-        `${trip.destination.lon}, ${trip.destination.lat}`) || '';
-      const dirLabel    = trip.reverse ? 'Destination → Origin' : 'Origin → Destination';
 
-      const metaLine = originLabel && destLabel
-        ? `${originLabel} → ${destLabel} (${dirLabel})`
+      const { address: originAddr, postal: originPostal } =
+        parseOriginLabel(originLabel);
+
+      const { pdText, cityText } = pdCityMetaFromTitle(title);
+
+      const fromPart = originAddr
+        ? `From: ${originAddr}${originPostal ? ', ' + originPostal : ''}`
         : '';
+      const toPartPieces = [];
+      if (pdText) toPartPieces.push(pdText);
+      if (cityText) toPartPieces.push(cityText);
+      const toPart = toPartPieces.length ? `To: ${toPartPieces.join(', ')}` : '';
+
+      const metaLine = [fromPart, toPart].filter(Boolean).join(', ');
 
       const tableHtml = buildTablesForTrip(trip);
       if (!tableHtml) return '';
@@ -493,12 +569,8 @@
       originObj.label || originObj.name || originObj.address ||
       originObj.query || 'selected origin';
 
-    // Shorten to "number + street" (first two comma-separated parts)
-    let originShort = originLabel;
-    const parts = originLabel.split(',');
-    if (parts.length >= 2) {
-      originShort = (parts[0] + ' ' + parts[1]).replace(/\s+/g, ' ').trim();
-    }
+    const originParsed = parseOriginLabel(originLabel);
+    const originShort = originParsed.address || originLabel;
 
     const title = `Trip Route Distribution for ${originShort} to ${targetLabel}`;
 
