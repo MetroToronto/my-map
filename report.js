@@ -380,28 +380,37 @@
     return { address: addressMain, postal: postal.replace(/\s+/g, ' ').trim() };
   }
 
+  // Returns:
+  //   label: "PD 1" (no colon)
+  //   cityText: "City of Toronto"
+  //   num: "1"
+  //   cityBare: "Toronto"
   function pdCityMetaFromTitle(title) {
-    if (!title) return { pdText: '', cityText: '' };
+    if (!title) return { label: '', cityText: '', num: '', cityBare: '' };
     const t = title.trim();
-    let pdText = '';
+    let pdNum = '';
     let cityName = '';
 
     const m = t.match(/^PD\s+(\d+)\s+of\s+(.+)$/i);
     if (m) {
-      pdText = 'PD: ' + m[1];
+      pdNum = m[1];
       cityName = m[2].trim();
     } else {
-      pdText = 'PD: ' + t;
-      cityName = t;
+      // Fallback – try to pull out number and city
+      const mNum = t.match(/(\d+)/);
+      if (mNum) pdNum = mNum[1];
+      const mOf = t.match(/\bof\s+(.+)$/i);
+      cityName = (mOf ? mOf[1] : t).trim();
     }
 
-    let cityText;
-    if (/^(City|Town|Region|County)\b/i.test(cityName)) {
-      cityText = cityName;
-    } else {
+    const cityBare = cityName.replace(/^(City|Town|Region|County)\s+of\s+/i, '').trim();
+    let cityText = cityName;
+    if (!/^(City|Town|Region|County)\s+of\s+/i.test(cityName)) {
       cityText = 'City of ' + cityName;
     }
-    return { pdText, cityText };
+
+    const label = pdNum ? ('PD ' + pdNum) : 'PD';
+    return { label, cityText, num: pdNum, cityBare };
   }
 
   /******************************************************************
@@ -464,20 +473,34 @@
           ? 'Route'
           : (idx === 0 ? 'Route 1 (fastest)' : `Route ${idx + 1}`);
 
-      let desc;
+      let descPlain;
+      let descHtml;
       if (!movs.length) {
-        desc = `${routeLabel}: (No named street segments found for this route.)`;
+        const base = `${routeLabel}: (No named street segments found for this route.)`;
+        descPlain = base;
+        descHtml  = escapeHtml(base);
       } else {
-        const pieces = movs.map(m => {
+        const piecesPlain = [];
+        const piecesHtml  = [];
+        for (const m of movs) {
           const dirPart = m.dir ? (m.dir + ' ') : '';
-          return `${dirPart}${m.name} (${km2(m.km)} km)`;
-        });
-        desc = `${routeLabel}: ` + pieces.join(', ');
+          const plain = `${dirPart}${m.name} (${km2(m.km)} km)`;
+          piecesPlain.push(plain);
+
+          const dirEsc  = m.dir ? (escapeHtml(m.dir) + ' ') : '';
+          const nameEsc = escapeHtml(m.name);
+          const kmEsc   = km2(m.km);
+          const htmlSeg = `${dirEsc}${nameEsc}<span class="seg-km"> (${kmEsc} km)</span>`;
+          piecesHtml.push(htmlSeg);
+        }
+        descPlain = `${routeLabel}: ` + piecesPlain.join(', ');
+        descHtml  = `${escapeHtml(routeLabel)}: ` + piecesHtml.join(', ');
       }
 
       rows.push({
         heading: headingChar,
-        desc,
+        descPlain,
+        descHtml,
         distKm,
         durMin
       });
@@ -488,7 +511,7 @@
     const bodyHtml = rows.map(r => `
       <tr>
         <td>${escapeHtml(r.heading || '')}</td>
-        <td>${escapeHtml(r.desc || '')}</td>
+        <td data-desc="${escapeHtml(r.descPlain || '')}">${r.descHtml || ''}</td>
         <td style="text-align:right">${isFiniteNum(r.distKm) ? km2(r.distKm) : ''}</td>
         <td style="text-align:right">${isFiniteNum(r.durMin) ? r.durMin.toFixed(1) : ''}</td>
       </tr>
@@ -510,6 +533,9 @@
     `;
   }
 
+  /******************************************************************
+   * Build cards for all trips
+   ******************************************************************/
   function buildCardsHtml(cache) {
     if (!cache || !Array.isArray(cache.trips) || !cache.trips.length) return '';
 
@@ -525,25 +551,48 @@
       const { address: originAddr, postal: originPostal } =
         parseOriginLabel(originLabel);
 
-      const { pdText, cityText } = pdCityMetaFromTitle(title);
+      let areaLabel = '';
+      let cityText = '';
+      let areaNum = '';
+      let cityBare = '';
 
-      const fromPart = originAddr
+      if (isPD) {
+        const meta = pdCityMetaFromTitle(title);
+        areaLabel = meta.label;       // "PD 1"
+        cityText  = meta.cityText;    // "City of Toronto"
+        areaNum   = meta.num || '';   // "1"
+        cityBare  = meta.cityBare;    // "Toronto"
+      } else {
+        const num = trip.key != null ? String(trip.key) :
+                    (trip.id != null ? String(trip.id) : '');
+        areaNum   = num;
+        areaLabel = num ? ('PZ ' + num) : 'PZ';
+
+        const cityNameRaw = trip.label || title;
+        cityBare = cityNameRaw.replace(/^(City|Town|Region|County)\s+of\s+/i, '').trim();
+        let displayName = cityNameRaw;
+        if (!/^(City|Town|Region|County)\s+of\s+/i.test(cityNameRaw)) {
+          displayName = 'City of ' + cityNameRaw;
+        }
+        cityText = displayName;
+      }
+
+      const fromLine = originAddr
         ? `From: ${originAddr}${originPostal ? ', ' + originPostal : ''}`
         : '';
-      const toPartPieces = [];
-      if (pdText) toPartPieces.push(pdText);
-      if (cityText) toPartPieces.push(cityText);
-      const toPart = toPartPieces.length ? `To: ${toPartPieces.join(', ')}` : '';
-
-      const metaLine = [fromPart, toPart].filter(Boolean).join(', ');
+      const toLine = `To: ${areaLabel}${cityText ? ', ' + cityText : ''}`;
 
       const tableHtml = buildTablesForTrip(trip);
       if (!tableHtml) return '';
 
       return `
-        <div class="card">
+        <div class="card"
+             data-area-type="${isPD ? 'PD' : 'PZ'}"
+             data-area-num="${escapeHtml(areaNum)}"
+             data-area-city="${escapeHtml(cityBare)}">
           <h2>${escapeHtml(title)}</h2>
-          ${metaLine ? `<p class="meta">${escapeHtml(metaLine)}</p>` : ''}
+          ${fromLine ? `<p class="meta-line">${escapeHtml(fromLine)}</p>` : ''}
+          ${toLine ? `<p class="meta-line">${escapeHtml(toLine)}</p>` : ''}
           ${tableHtml}
         </div>
       `;
@@ -601,24 +650,28 @@
         }
         h1 {
           font-size: 20px;
-          margin: 0 0 16px 0;
+          margin: 0 0 10px 0;
         }
         h2 {
           font-size: 16px;
-          margin: 14px 0 6px 0;
+          margin: 14px 0 4px 0;
         }
         h3 {
           font-size: 14px;
           margin: 10px 0 4px 0;
         }
-        p.meta {
-          margin: 0 0 8px 0;
+        p.meta-line {
+          margin: 0;
           font-size: 12px;
           color: #555;
+        }
+        p.meta-line + p.meta-line {
+          margin-top: 2px;
         }
         table {
           width: 100%;
           border-collapse: collapse;
+          margin-top: 8px;
           margin-bottom: 16px;
           background: #fff;
         }
@@ -640,6 +693,29 @@
           box-shadow: 0 1px 3px rgba(0,0,0,0.04);
           padding: 10px 12px 12px 12px;
         }
+        .toolbar {
+          margin: 0 0 14px 0;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .toolbar button {
+          font-size: 12px;
+          padding: 4px 10px;
+          border-radius: 12px;
+          border: 1px solid #ccc;
+          background: #fff;
+          cursor: pointer;
+        }
+        .toolbar button:hover {
+          background: #f0f0f0;
+        }
+        .seg-km {
+          white-space: nowrap;
+        }
+        body.km-disabled .seg-km {
+          display: none;
+        }
       </style>
     `;
 
@@ -649,15 +725,82 @@
       return;
     }
 
-    w.document.write(
+    const html =
       '<!doctype html><html><head><meta charset="utf-8">' +
       '<title>' + escapeHtml(title) + '</title>' +
       css +
       '</head><body>' +
       '<h1>' + escapeHtml(title) + '</h1>' +
+      '<div class="toolbar">' +
+        '<button id="btn-toggle-km">Hide km</button>' +
+        '<button id="btn-copy-csv">Copy to spreadsheet</button>' +
+        '<button id="btn-print">Print page</button>' +
+      '</div>' +
       cardsHtml +
-      '</body></html>'
-    );
+      '<script>' +
+      '(function(){' +
+        'var doc=document;' +
+        'var toggleBtn=doc.getElementById("btn-toggle-km");' +
+        'var copyBtn=doc.getElementById("btn-copy-csv");' +
+        'var printBtn=doc.getElementById("btn-print");' +
+        'var kmEnabled=true;' +
+
+        'function setToggleLabel(){toggleBtn.textContent=kmEnabled?"Hide km":"Show km";}' +
+
+        'if(toggleBtn){toggleBtn.addEventListener("click",function(){' +
+          'kmEnabled=!kmEnabled;' +
+          'if(kmEnabled){doc.body.classList.remove("km-disabled");}else{doc.body.classList.add("km-disabled");}' +
+          'setToggleLabel();' +
+        '});}' +
+
+        'if(printBtn){printBtn.addEventListener("click",function(){window.print();});}' +
+
+        'function fallbackCopy(text){' +
+          'var ta=doc.createElement("textarea");' +
+          'ta.value=text;ta.style.position="fixed";ta.style.left="-9999px";' +
+          'doc.body.appendChild(ta);ta.focus();ta.select();' +
+          'try{doc.execCommand("copy");}catch(e){}' +
+          'doc.body.removeChild(ta);' +
+          'alert("Copied trip routes to clipboard as CSV. You can paste into Excel or Sheets.");' +
+        '}' +
+
+        'if(copyBtn){copyBtn.addEventListener("click",function(){' +
+          'var rows=[];' +
+          'var cards=doc.querySelectorAll(".card");' +
+          'cards.forEach(function(card){' +
+            'var areaNum=card.getAttribute("data-area-num")||"";' +
+            'var cityBare=card.getAttribute("data-area-city")||"";' +
+            'var trs=card.querySelectorAll("tbody tr");' +
+            'trs.forEach(function(tr){' +
+              'var tds=tr.querySelectorAll("td");' +
+              'if(tds.length<4)return;' +
+              'var tripDir=tds[0].innerText.trim();' +
+              'var descCell=tds[1];' +
+              'var desc=descCell.getAttribute("data-desc")||descCell.innerText.trim();' +
+              'var totalKm=tds[2].innerText.trim();' +
+              'var totalMin=tds[3].innerText.trim();' +
+              'rows.push([areaNum,cityBare,tripDir,desc,totalKm,totalMin]);' +
+            '});' +
+          '});' +
+          'if(!rows.length){alert("No trip rows to copy.");return;}' +
+          'var header=["Area","City","Trip dir","Street-by-street","Total km","Total min"];' +
+          'var csvRows=[header].concat(rows).map(function(r){' +
+            'return r.map(function(v){return "\\""+String(v).replace(/"/g,"\\"\\"")+"\\"";}).join(",");' +
+          '});' +
+          'var csv=csvRows.join("\\n");' +
+          'if(navigator.clipboard&&navigator.clipboard.writeText){' +
+            'navigator.clipboard.writeText(csv).then(function(){' +
+              'alert("Copied trip routes to clipboard as CSV. You can paste into Excel or Sheets.");' +
+            '},function(){fallbackCopy(csv);});' +
+          '}else{fallbackCopy(csv);}' +
+        '});}' +
+
+        'if(toggleBtn){setToggleLabel();}' +
+      '})();' +
+      '<\/script>' +
+      '</body></html>';
+
+    w.document.write(html);
     w.document.close();
   }
 
@@ -671,7 +814,7 @@
       div.innerHTML = `
         <div class="routing-header"><strong>Report</strong></div>
         <div class="routing-row">
-          <button type="button" id="rt-print-report">Print Report</button>
+          <button type="button" id="rt-print-report">Print / View Report</button>
         </div>
         <small style="font-size:11px;color:#555;display:block;margin-top:6px;">
           Uses the most recently generated trips from the Trip Generator.
