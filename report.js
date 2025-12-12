@@ -36,8 +36,8 @@
       .replace(/'/g, '&#39;');
   }
 
-  function cleanHtml(s) {
-    return String(s || '').replace(/<[^>]*>/g, '').trim();
+  function cleanHtml(str) {
+    return String(str || '').replace(/<[^>]*>/g, '').trim();
   }
 
   function normalizeName(raw) {
@@ -138,7 +138,10 @@
     return dLon >= 0 ? 'EB' : 'WB';
   }
 
-  // 200–500 m window rule for long steps
+  // 3-tier rule:
+  //  < 20 m      → simple start→end
+  //  20–200 m    → window 20–50 m
+  //  ≥ 200 m     → window 200–500 m
   function directionFromSegment(segCoords) {
     if (!segCoords || segCoords.length < 2) return '';
 
@@ -152,13 +155,25 @@
     }
     if (total < 1) return '';
 
-    // Very short segments → simple start→end
-    if (total < 200) {
+    // Very tiny segments: just use start→end
+    if (total < 20) {
       return axisCardinal(segCoords[0], segCoords[n - 1]);
     }
 
-    const winStart = 200;
-    const winEnd = Math.min(total, 500);
+    let winStart, winEnd;
+    if (total < 200) {
+      // Short segments: 20–50 m window
+      winStart = 20;
+      winEnd   = Math.min(total, 50);
+    } else {
+      // Long segments: 200–500 m window
+      winStart = 200;
+      winEnd   = Math.min(total, 500);
+    }
+
+    if (winStart >= winEnd) {
+      return axisCardinal(segCoords[0], segCoords[n - 1]);
+    }
 
     let acc = 0;
     let dxSum = 0;
@@ -178,8 +193,8 @@
       acc += d;
     }
 
+    // If we got no usable window, fall back
     if (Math.abs(dxSum) < 1e-12 && Math.abs(dySum) < 1e-12) {
-      // fallback
       return axisCardinal(segCoords[0], segCoords[n - 1]);
     }
 
