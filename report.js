@@ -72,7 +72,7 @@
     if (HIGHWAYS !== null) return;
     if (!HIGHWAYS_PROMISE) {
       const candidates = [
-        'data/highway_centrelines.json',   // your file
+        'data/highway_centrelines.json',
         'data/highway_centerlines.json',
         'data/highway_centreline.json'
       ];
@@ -119,8 +119,7 @@
       }
     }
 
-    // Require being reasonably close (~500 m in rough degree units)
-    const MAX_DEG2 = 0.005 * 0.005;
+    const MAX_DEG2 = 0.005 * 0.005; // ~500m
     if (bestName && bestD2 <= MAX_DEG2) return bestName;
     return '';
   }
@@ -128,7 +127,6 @@
   /******************************************************************
    * Direction + street-name helpers
    ******************************************************************/
-  // Axis-based N/E/S/W from two lon/lat points
   function axisCardinal(a, b) {
     if (!a || !b || a.length < 2 || b.length < 2) return '';
     const dLon = b[0] - a[0];
@@ -140,9 +138,7 @@
     return dLon >= 0 ? 'EB' : 'WB';
   }
 
-  // Direction using segment geometry:
-  // - total length < 150 m → start→end
-  // - otherwise, length-weighted average of Δlon/Δlat over middle 50%
+  // 100–300 m style rule for long steps
   function directionFromSegment(segCoords) {
     if (!segCoords || segCoords.length < 2) return '';
 
@@ -156,12 +152,21 @@
     }
     if (total < 1) return '';
 
-    if (total < 150) {
+    // Very short segments → simple start→end
+    if (total < 120) {
       return axisCardinal(segCoords[0], segCoords[n - 1]);
     }
 
-    const winStart = total * 0.25;
-    const winEnd   = total * 0.75;
+    let winStart, winEnd;
+    if (total <= 300) {
+      // For 120–300 m, use middle 50%
+      winStart = total * 0.25;
+      winEnd   = total * 0.75;
+    } else {
+      // For >300 m, use fixed 100–300 m window from the start
+      winStart = 100;
+      winEnd   = 300;
+    }
 
     let acc = 0;
     let dxSum = 0;
@@ -182,6 +187,7 @@
     }
 
     if (Math.abs(dxSum) < 1e-12 && Math.abs(dySum) < 1e-12) {
+      // fallback
       return axisCardinal(segCoords[0], segCoords[n - 1]);
     }
 
@@ -191,9 +197,9 @@
     return dxSum >= 0 ? 'EB' : 'WB';
   }
 
-  const GENERIC_INSTR_RE = /^(keep (left|right)|slight (left|right)|turn (left|right)|continue\b|take (the )?ramp\b|enter (the )?roundabout\b)$/i;
+  const GENERIC_INSTR_RE =
+    /^(keep (left|right)|slight (left|right)|turn (left|right)|continue\b|take (the )?ramp\b|enter (the )?roundabout\b)$/i;
 
-  // Try to get a usable street name from ORS step (before highway fallback)
   function stepNameNatural(step) {
     if (!step) return '';
     let name = normalizeName(step.name || step.road);
@@ -219,23 +225,35 @@
     return name;
   }
 
-  // Key for merging consecutive movements
-  function mergeKey(m) {
-    const dir = m.dir || '';
-    let name = (m.name || '').toUpperCase().replace(/\s+/g, ' ').trim();
-
-    if (/GARDINER/.test(name)) {
-      // Treat various Gardiner variants as the same for merging
-      name = name
+  // Normalize to a "highway group" name (for merging)
+  function highwayBase(nameUpper) {
+    let n = nameUpper;
+    if (/GARDINER/.test(n)) {
+      n = n
         .replace(/\bEXPRESSWAY\b/g, '')
         .replace(/\bEXPRESS\b/g, '')
         .replace(/\bCOLLECTOR\b/g, '')
         .replace(/\bF G\b/g, '')
         .replace(/\s+/g, ' ')
         .trim();
+      return n || 'GARDINER';
     }
+    if (/HIGHWAY\s+401\b/.test(n)) {
+      return 'HIGHWAY 401';
+    }
+    return null;
+  }
 
-    return dir + '|' + name;
+  // Key for merging consecutive movements
+  // For highways (Gardiner + 401), ignore direction so they always merge
+  function mergeKey(m) {
+    const dir = m.dir || '';
+    let nameUpper = (m.name || '').toUpperCase().replace(/\s+/g, ' ').trim();
+    const hw = highwayBase(nameUpper);
+    if (hw) {
+      return 'HW|' + hw;   // highway group, direction-insensitive
+    }
+    return dir + '|' + nameUpper;
   }
 
   function mergeConsecutive(movs) {
@@ -269,8 +287,6 @@
     return out;
   }
 
-  // coords: [ [lon,lat], ... ]
-  // steps: ORS steps with way_points + distance (in km)
   function buildMovementsFromDirections(coords, steps) {
     if (!coords || !coords.length || !steps || !steps.length) return [];
 
@@ -288,8 +304,7 @@
       const endIdx   = Math.max(startIdx, Math.min(len - 1, b));
       if (endIdx <= startIdx) continue;
 
-      // Distance: ORS uses km because we call with units='km'
-      let km = Number(step.distance);
+      let km = Number(step.distance); // ORS distance already in km (units='km')
       if (!isFiniteNum(km) || km <= 0) {
         let meters = 0;
         for (let i = startIdx + 1; i <= endIdx; i++) {
@@ -302,10 +317,8 @@
       const segCoords = coords.slice(startIdx, endIdx + 1);
       const dir = directionFromSegment(segCoords) || '';
 
-      // Base name from ORS
       let name = stepNameNatural(step);
 
-      // If still unnamed, try nearest highway centreline
       if (!name) {
         const midIdx = Math.floor((startIdx + endIdx) / 2);
         const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
@@ -315,7 +328,6 @@
         }
       }
 
-      // If still unnamed, finally fall back to generic instruction text
       if (!name) {
         const instr = cleanHtml(step.instruction || '');
         name = finalNameCleanup(instr || 'Unnamed segment');
@@ -348,7 +360,6 @@
                       (Array.isArray(props.segments) && props.segments[0]) ||
                       {};
 
-      // distance already in km (units='km')
       let distKm = Number(summary.distance);
       if (!isFiniteNum(distKm) || distKm <= 0) {
         distKm = 0;
@@ -449,7 +460,6 @@
       return;
     }
 
-    // Make sure highway centreline data is ready (for naming)
     await ensureHighwaysLoaded().catch(() => {});
 
     const cardsHtml = buildCardsHtml(cache);
@@ -578,10 +588,7 @@
     }
   }
 
-  // Simple API if you ever need it
-  global.Report = {
-    print: printReport
-  };
+  global.Report = { print: printReport };
 
   document.addEventListener('DOMContentLoaded', function () {
     initWhenReady();
