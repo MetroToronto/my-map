@@ -47,6 +47,21 @@
     return s;
   }
 
+  // Strip trailing ", number" (e.g., "Jane Street, 55" → "Jane Street")
+  function stripTrailingCommaNumber(name) {
+    if (!name) return name;
+    const m = String(name).match(/^(.+?),\s*\d+\s*$/);
+    if (m) return m[1].trim();
+    return name;
+  }
+
+  function finalNameCleanup(name) {
+    if (!name) return name;
+    let n = stripTrailingCommaNumber(name);
+    n = n.replace(/\s+/g, ' ').trim();
+    return n;
+  }
+
   /******************************************************************
    * Highway centreline support
    ******************************************************************/
@@ -125,13 +140,12 @@
     return dLon >= 0 ? 'EB' : 'WB';
   }
 
-  // Decide direction using the segment geometry:
-  // - if total length < 150 m → use start→end
-  // - else → use a length-weighted average of Δlon/Δlat over the middle 50% of the step
+  // Direction using segment geometry:
+  // - total length < 150 m → start→end
+  // - otherwise, length-weighted average of Δlon/Δlat over middle 50%
   function directionFromSegment(segCoords) {
     if (!segCoords || segCoords.length < 2) return '';
 
-    // Compute lengths per small edge
     const n = segCoords.length;
     const lens = new Array(n - 1);
     let total = 0;
@@ -140,15 +154,12 @@
       lens[i - 1] = d;
       total += d;
     }
-
     if (total < 1) return '';
 
-    // Very short → just use overall displacement
     if (total < 150) {
       return axisCardinal(segCoords[0], segCoords[n - 1]);
     }
 
-    // Longer segments: consider middle 50% (25%–75% of length)
     const winStart = total * 0.25;
     const winEnd   = total * 0.75;
 
@@ -171,11 +182,9 @@
     }
 
     if (Math.abs(dxSum) < 1e-12 && Math.abs(dySum) < 1e-12) {
-      // Fallback: overall displacement
       return axisCardinal(segCoords[0], segCoords[n - 1]);
     }
 
-    // Decide axis from weighted vector
     if (Math.abs(dySum) >= Math.abs(dxSum)) {
       return dySum >= 0 ? 'NB' : 'SB';
     }
@@ -184,7 +193,7 @@
 
   const GENERIC_INSTR_RE = /^(keep (left|right)|slight (left|right)|turn (left|right)|continue\b|take (the )?ramp\b|enter (the )?roundabout\b)$/i;
 
-  // Try to get a usable street name from ORS step (without highways yet)
+  // Try to get a usable street name from ORS step (before highway fallback)
   function stepNameNatural(step) {
     if (!step) return '';
     let name = normalizeName(step.name || step.road);
@@ -203,7 +212,30 @@
       }
     }
 
+    if (name) {
+      name = finalNameCleanup(name);
+    }
+
     return name;
+  }
+
+  // Key for merging consecutive movements
+  function mergeKey(m) {
+    const dir = m.dir || '';
+    let name = (m.name || '').toUpperCase().replace(/\s+/g, ' ').trim();
+
+    if (/GARDINER/.test(name)) {
+      // Treat various Gardiner variants as the same for merging
+      name = name
+        .replace(/\bEXPRESSWAY\b/g, '')
+        .replace(/\bEXPRESS\b/g, '')
+        .replace(/\bCOLLECTOR\b/g, '')
+        .replace(/\bF G\b/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    return dir + '|' + name;
   }
 
   function mergeConsecutive(movs) {
@@ -212,7 +244,7 @@
       if (!m || !m.name || !m.km || m.km <= 0) continue;
       if (out.length) {
         const last = out[out.length - 1];
-        if (last.name === m.name && last.dir === m.dir) {
+        if (mergeKey(last) === mergeKey(m)) {
           last.km += m.km;
           continue;
         }
@@ -279,14 +311,14 @@
         const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
         if (mid && mid.length >= 2) {
           const hName = nearestHighwayName(mid[0], mid[1]);
-          if (hName) name = hName;
+          if (hName) name = finalNameCleanup(hName);
         }
       }
 
-      // If *still* unnamed, finally fall back to generic instruction text
+      // If still unnamed, finally fall back to generic instruction text
       if (!name) {
         const instr = cleanHtml(step.instruction || '');
-        name = instr || 'Unnamed segment';
+        name = finalNameCleanup(instr || 'Unnamed segment');
       }
 
       rows.push({ dir, name, km });
