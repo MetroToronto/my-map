@@ -396,7 +396,6 @@
       pdNum = m[1];
       cityName = m[2].trim();
     } else {
-      // Fallback – try to pull out number and city
       const mNum = t.match(/(\d+)/);
       if (mNum) pdNum = mNum[1];
       const mOf = t.match(/\bof\s+(.+)$/i);
@@ -439,7 +438,7 @@
 
     const rows = [];
 
-    features.forEach((feat, idx) => {
+    features.forEach((feat) => {
       const coords = feat.geometry && Array.isArray(feat.geometry.coordinates)
         ? feat.geometry.coordinates
         : [];
@@ -468,15 +467,11 @@
         ? Number(summary.duration) / 60
         : NaN;
 
-      const routeLabel =
-        features.length === 1
-          ? 'Route'
-          : (idx === 0 ? 'Route 1 (fastest)' : `Route ${idx + 1}`);
-
       let descPlain;
       let descHtml;
+
       if (!movs.length) {
-        const base = `${routeLabel}: (No named street segments found for this route.)`;
+        const base = '(No named street segments found for this route.)';
         descPlain = base;
         descHtml  = escapeHtml(base);
       } else {
@@ -493,8 +488,9 @@
           const htmlSeg = `${dirEsc}${nameEsc}<span class="seg-km"> (${kmEsc} km)</span>`;
           piecesHtml.push(htmlSeg);
         }
-        descPlain = `${routeLabel}: ` + piecesPlain.join(', ');
-        descHtml  = `${escapeHtml(routeLabel)}: ` + piecesHtml.join(', ');
+        // IMPORTANT CHANGE: no "Route:" prefix here
+        descPlain = piecesPlain.join(', ');
+        descHtml  = piecesHtml.join(', ');
       }
 
       rows.push({
@@ -761,7 +757,7 @@
           'doc.body.appendChild(ta);ta.focus();ta.select();' +
           'try{doc.execCommand("copy");}catch(e){}' +
           'doc.body.removeChild(ta);' +
-          'alert("Copied trip routes to clipboard as CSV. You can paste into Excel or Sheets.");' +
+          'alert("Copied trip routes. Paste directly into Excel or Sheets.");' +
         '}' +
 
         'if(copyBtn){copyBtn.addEventListener("click",function(){' +
@@ -784,15 +780,15 @@
           '});' +
           'if(!rows.length){alert("No trip rows to copy.");return;}' +
           'var header=["Area","City","Trip dir","Street-by-street","Total km","Total min"];' +
-          'var csvRows=[header].concat(rows).map(function(r){' +
-            'return r.map(function(v){return "\\""+String(v).replace(/"/g,"\\"\\"")+"\\"";}).join(",");' +
+          'var lines=[header].concat(rows).map(function(r){' +
+            'return r.map(function(v){return String(v==null?"":v);}).join("\\t");' +  // TAB-separated
           '});' +
-          'var csv=csvRows.join("\\n");' +
+          'var text=lines.join("\\n");' +
           'if(navigator.clipboard&&navigator.clipboard.writeText){' +
-            'navigator.clipboard.writeText(csv).then(function(){' +
-              'alert("Copied trip routes to clipboard as CSV. You can paste into Excel or Sheets.");' +
-            '},function(){fallbackCopy(csv);});' +
-          '}else{fallbackCopy(csv);}' +
+            'navigator.clipboard.writeText(text).then(function(){' +
+              'alert("Copied trip routes. Paste directly into Excel or Sheets.");' +
+            '},function(){fallbackCopy(text);});' +
+          '}else{fallbackCopy(text);}' +
         '});}' +
 
         'if(toggleBtn){setToggleLabel();}' +
