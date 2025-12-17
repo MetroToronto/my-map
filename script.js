@@ -2,6 +2,9 @@
 const map = L.map('map').setView([43.6532, -79.3832], 11);
 window.map = map; // expose for routing.js / report.js
 
+// Move the default zoom control to the TOP RIGHT
+map.zoomControl.setPosition('topright');
+
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '© OpenStreetMap'
@@ -216,7 +219,8 @@ fetch(PD_URL)
 
     // PD Control UI
     const PDControl = L.Control.extend({
-      options: { position: 'topright' },
+      // MOVED TO LEFT
+      options: { position: 'topleft' },
       onAdd: function () {
         const div = L.DomUtil.create('div', 'pd-control collapsed');
         div.innerHTML = `
@@ -427,7 +431,8 @@ fetch(ZONES_URL)
 
     // Zones control (Engage / Disengage) with inline search
     const ZonesControl = L.Control.extend({
-      options: { position: 'topright' },
+      // MOVED TO LEFT
+      options: { position: 'topleft' },
       onAdd: function () {
         const div = L.DomUtil.create('div', 'pd-control');
         div.innerHTML = `
