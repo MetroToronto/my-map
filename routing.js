@@ -7,6 +7,12 @@
   const COLOR_FIRST  = '#0b3aa5';
   const COLOR_OTHERS = '#2166f3';
 
+  // UI labels (keep consistent with your left-side controls)
+  const LABEL_PD = 'PD Trips';
+  const LABEL_PZ = 'Zone Trips';
+  const LABEL_PD_BUSY = 'PD Trips…';
+  const LABEL_PZ_BUSY = 'Zone Trips…';
+
   // ORS free-tier assumption: 40 requests / minute
   const MAX_PER_MINUTE = 40;
   const BASE_DELAY_MS  = 250;
@@ -314,127 +320,6 @@
   }
 
   // ===== Directions wrapper =====
-  
-  // ===== Geometry helpers (PD fallback) =====
-  function _flattenLatLngs(latlngs) {
-    // Returns array of polygons, where each polygon is [outerRing, ...holes]
-    // Each ring is [[lng,lat], ...]
-    if (!Array.isArray(latlngs) || !latlngs.length) return [];
-    const isLatLng = (p) => p && typeof p.lat === 'number' && typeof p.lng === 'number';
-    const toRing = (ring) => ring.map(p => [p.lng, p.lat]);
-
-    // Polygon: [LatLng, LatLng, ...] OR [[LatLng...], [hole...]]
-    if (isLatLng(latlngs[0])) {
-      return [[[toRing(latlngs)]]].map(x=>x[0]); // [[outer]]
-    }
-    // Polygon with rings: [[LatLng...], [hole...]]
-    if (Array.isArray(latlngs[0]) && latlngs[0].length && isLatLng(latlngs[0][0])) {
-      return [latlngs.map(toRing)];
-    }
-    // MultiPolygon: [[[LatLng...], ...], ...]
-    if (Array.isArray(latlngs[0]) && Array.isArray(latlngs[0][0])) {
-      const polys = [];
-      for (const poly of latlngs) {
-        if (Array.isArray(poly) && poly.length) {
-          // poly is rings
-          if (poly[0] && poly[0].length && isLatLng(poly[0][0])) polys.push(poly.map(toRing));
-          // poly is nested one more level
-          else if (Array.isArray(poly[0]) && Array.isArray(poly[0][0]) && isLatLng(poly[0][0][0])) {
-            for (const p2 of poly) polys.push(p2.map(toRing));
-          }
-        }
-      }
-      return polys;
-    }
-    return [];
-  }
-
-  function _pointInRing(pt, ring) {
-    // Ray casting, pt = [lng,lat]
-    const x = pt[0], y = pt[1];
-    let inside = false;
-    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-      const xi = ring[i][0], yi = ring[i][1];
-      const xj = ring[j][0], yj = ring[j][1];
-      const intersect = ((yi > y) !== (yj > y)) &&
-                        (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-12) + xi);
-      if (intersect) inside = !inside;
-    }
-    return inside;
-  }
-
-  function _pointInPoly(pt, poly) {
-    // poly = [outerRing, ...holes]
-    if (!poly || !poly.length) return false;
-    const outer = poly[0];
-    if (!_pointInRing(pt, outer)) return false;
-    for (let h = 1; h < poly.length; h++) {
-      if (_pointInRing(pt, poly[h])) return false; // inside a hole
-    }
-    return true;
-  }
-
-  function pointInLayer(lon, lat, layer) {
-    if (!layer || typeof layer.getLatLngs !== 'function') return false;
-    const polys = _flattenLatLngs(layer.getLatLngs());
-    const pt = [lon, lat];
-    for (const poly of polys) {
-      if (_pointInPoly(pt, poly)) return true;
-    }
-    return false;
-  }
-
-  function lastCoordFromGeojson(json) {
-    const feat = json && Array.isArray(json.features) ? json.features[0] : null;
-    const coords = feat && feat.geometry && Array.isArray(feat.geometry.coordinates) ? feat.geometry.coordinates : [];
-    return coords.length ? coords[coords.length - 1] : null; // [lng,lat]
-  }
-
-  function endsInsideLayer(json, layer) {
-    const last = lastCoordFromGeojson(json);
-    if (!last) return false;
-    return pointInLayer(last[0], last[1], layer);
-  }
-
-  function candidatePointsInLayer(layer, maxPts = 16) {
-    if (!layer || typeof layer.getBounds !== 'function') return [];
-    const b = layer.getBounds();
-    const south = b.getSouth(), north = b.getNorth(), west = b.getWest(), east = b.getEast();
-    const latSpan = (north - south) || 0;
-    const lngSpan = (east - west) || 0;
-    const padLat = latSpan * 0.12;
-    const padLng = lngSpan * 0.12;
-
-    const s = south + padLat, n = north - padLat, w = west + padLng, e = east - padLng;
-    const pts = [];
-    for (let iy = 0; iy < 5; iy++) {
-      const lat = s + (n - s) * (iy / 4);
-      for (let ix = 0; ix < 5; ix++) {
-        const lon = w + (e - w) * (ix / 4);
-        if (pointInLayer(lon, lat, layer)) pts.push([lon, lat]);
-      }
-    }
-    // Put center-first
-    const c = b.getCenter();
-    pts.sort((a, b2) => {
-      const da = (a[0]-c.lng)**2 + (a[1]-c.lat)**2;
-      const db = (b2[0]-c.lng)**2 + (b2[1]-c.lat)**2;
-      return da - db;
-    });
-    // unique-ish
-    const out = [];
-    const seen = new Set();
-    for (const p of pts) {
-      const k = p[0].toFixed(6) + ',' + p[1].toFixed(6);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(p);
-      if (out.length >= maxPts) break;
-    }
-    return out;
-  }
-
-  // ===== Directions wrapper =====
   async function getRoutes(originLonLat, destLonLat, maxCount, opts = {}) {
     const o = sanitizeLonLat(originLonLat);
     const d = sanitizeLonLat(destLonLat);
@@ -479,8 +364,9 @@
       // 2010: destination/origin isn't close enough to a routable road (centroid in woods/water/etc.)
       if (is2010) {
         // 1) Retry by allowing a larger snap radius on the PD-side point
-        for (const r of [1000, 2000, 5000, 8000]) {
+        for (const r of [1000, 5000, 8000]) {
           try {
+            await RateLimiter.beforeRequest();
             const j = await doFetch({ ...baseBody, radiuses: makeRadiuses(r) });
             if (!layer || endsInsideLayer(j, layer)) return j;
           } catch (_) {}
@@ -488,12 +374,13 @@
 
         // 2) If we have the PD polygon layer, try alternate points INSIDE the polygon
         if (layer) {
-          const candidates = candidatePointsInLayer(layer, 16);
+          const candidates = candidatePointsInLayer(layer, 8);
           for (const p of candidates) {
             const coords = (pdSide === 'origin') ? [p, d] : [o, p];
-            for (const r of [2000, 8000]) {
+            for (const r of [8000]) {
               try {
-                const j = await doFetch({ ...baseBody, coordinates: coords, radiuses: makeRadiuses(r) });
+                await RateLimiter.beforeRequest();
+            const j = await doFetch({ ...baseBody, coordinates: coords, radiuses: makeRadiuses(r) });
                 if (endsInsideLayer(j, layer)) return j;
               } catch (_) {}
             }
@@ -508,6 +395,7 @@
       if (!is2099) throw e;
       const dSwap = sanitizeLonLat([d[1], d[0]]);
       const bodySwap = { ...baseBody, coordinates: [o, dSwap] };
+      await RateLimiter.beforeRequest();
       return await doFetch(bodySwap);
     }
   }
@@ -591,7 +479,6 @@
       requests.push({
         key,
         name,
-        layer: reg.layer,
         lon: center.lng,
         lat: center.lat,
         count
@@ -681,7 +568,7 @@
     });
   }
 
-  // Overlay for “only one PD” rule for Generate PZ Trips
+  // Overlay for “only one PD” rule for Zone Trips
   function showSinglePDPopup(selectedKeys) {
     const existing = document.getElementById('routing-pd-overlay');
     if (existing) existing.remove();
@@ -745,11 +632,11 @@
 
     if (mode === 'PD' && btnPD) {
       btnPD.disabled  = busy;
-      btnPD.textContent = busy ? 'PD Trips…' : 'PD Trips';
+      btnPD.textContent = busy ? LABEL_PD_BUSY : LABEL_PD;
     }
     if (mode === 'PZ' && btnPZ) {
       btnPZ.disabled  = busy;
-      btnPZ.textContent = busy ? 'Zone Trips…' : 'Zone Trips';
+      btnPZ.textContent = busy ? LABEL_PZ_BUSY : LABEL_PZ;
     }
     if (btnClear) btnClear.disabled = busy;
   }
@@ -777,38 +664,9 @@
         const d = reverse ? origin : dest;
 
         await RateLimiter.beforeRequest();
-        let json;
-        try {
-          json = await getRoutes(o, d, req.count, { layer: req.layer, pdSide: (reverse ? 'origin' : 'dest') });
-        } catch (errOne) {
-          console.warn('PD routing failed for', req?.name || req?.key || 'PD', errOne);
-          S.lastTrips.push({
-            mode: 'PD',
-            key : req.key,
-            name: req.name,
-            reverse,
-            origin: { lon: o[0], lat: o[1], label: (reverse ? req.name : ((global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin')) },
-            destination: { lon: d[0], lat: d[1], label: (reverse ? ((global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin') : req.name) },
-            features: [],
-            error: String(errOne && errOne.message ? errOne.message : errOne)
-          });
-          continue;
-        }
+        const json  = await getRoutes(o, d, req.count);
         const feats = Array.isArray(json.features) ? json.features.slice(0, req.count) : [];
-        if (!feats.length) {
-          console.warn('No routes returned for', req?.name || req?.key || 'PD');
-          S.lastTrips.push({
-            mode: 'PD',
-            key : req.key,
-            name: req.name,
-            reverse,
-            origin: { lon: o[0], lat: o[1], label: (reverse ? req.name : ((global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin')) },
-            destination: { lon: d[0], lat: d[1], label: (reverse ? ((global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin') : req.name) },
-            features: [],
-            error: 'No routes returned by ORS for this destination.'
-          });
-          continue;
-        }
+        if (!feats.length) continue;
 
         // sort alternatives by duration then distance
         feats.sort((a, b) => {
@@ -1019,10 +877,10 @@
     onAdd: function () {
       const el = L.DomUtil.create('div', 'routing-control');
       el.innerHTML = `
-        <div class="routing-header"><strong>Trip Generator</strong></div>
+        <div class="routing-header"><strong>Distribute Trips</strong></div>
         <div class="routing-actions" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
-          <button id="rt-gen-pd">Generate PD Trips</button>
-          <button id="rt-gen-pz">Generate PZ Trips</button>
+          <button id="rt-gen-pd">PD Trips</button>
+          <button id="rt-gen-pz">Zone Trips</button>
           <button id="rt-clear" class="ghost">Clear</button>
         </div>
         <div style="margin-bottom:8px;">
