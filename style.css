@@ -1,30 +1,25 @@
 /* ---------- Layout ---------- */
-html, body { height: 100%; margin: 0; }
-#map { height: 100%; width: 100%; }
+html, body { height: 100%; margin: 0; padding: 0; }
+#map { height: 100vh; width: 100vw; }
 
-/* ---------- Design tokens ---------- */
-:root {
-  --ui-bg: #fff;
-  --ui-border: #ddd;
-  --ui-border-strong: #bbb;
+/* ---------- Theme vars ---------- */
+:root{
+  --ui-bg: #ffffff;
+  --ui-pad: 12px;
+  --ui-gap: 10px;
   --ui-shadow: 0 2px 10px rgba(0,0,0,.12);
   --ui-radius: 14px;
-  --ui-pad: 10px;
-  --ui-gap: 8px;
+  --ui-border: 1px solid rgba(0,0,0,.08);
 
   --pd-stroke: #ff6600;
   --pd-selected: #d40000;
   --zone-stroke: #2166f3;
   --zone-selected: #0b3aa5;
-
-  --btn-bg: #fff;
-  --btn-bg-ghost: #f7f7f7;
-  --btn-border: #bbb;
-  --btn-hover: #f0f0f0;
 }
 
-/* ---------- Unified card shell (PD, Zones, Trip, Report) ---------- */
+/* ---------- Card base ---------- */
 .pd-control,
+.zone-control,
 .routing-control,
 .report-control {
   background: var(--ui-bg);
@@ -36,226 +31,174 @@ html, body { height: 100%; margin: 0; }
   max-width: 250px;
 }
 
-/* Titles on top */
-.pd-header,
-.routing-header {
-  display: block;
-  margin-bottom: 6px;
-}
-.pd-header strong,
-.routing-header strong {
-  display: block;
-  font-weight: 800;
-  font-size: 20px;
-  margin: 0 0 8px 0;
+/* ---------- Search bar (Leaflet Control Geocoder) ---------- */
+/* icon + input on same row; width matches cards */
+.leaflet-control-geocoder {
+  width: 250px;
+  max-width: 250px;
+  display: flex;
+  align-items: center;
+  gap: var(--ui-gap);
+  box-sizing: border-box;
 }
 
-/* (FIX placed here) Collapse behavior for Planning Districts */
-.pd-control.collapsed .pd-list,
-.pd-control.collapsed #pd-list {
-  display: none !important;
+.leaflet-control-geocoder .leaflet-control-geocoder-icon {
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid #d0d0d0;
+  background-color: #fff;
+  background-position: center;
+  background-repeat: no-repeat;
+  box-sizing: border-box;
+}
+
+.leaflet-control-geocoder .leaflet-control-geocoder-form {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+.leaflet-control-geocoder .leaflet-control-geocoder-form input {
+  width: 100%;
+  height: 38px;
+  padding: 8px 10px;
+  font-size: 14px;
+  border: 1px solid #d0d0d0;
+  border-radius: 10px;
+  box-sizing: border-box;
+}
+
+/* dropdown list width aligned */
+.leaflet-control-geocoder .leaflet-control-geocoder-alternatives {
+  width: 250px;
+  max-width: 250px;
+  box-sizing: border-box;
+}
+
+/* ---------- Titles on top ---------- */
+.pd-header,
+.zone-header,
+.routing-header,
+.report-header {
+  font-weight: 800;
+  font-size: 22px;
+  margin: 0 0 8px 0;
 }
 
 /* Action rows under the title */
 .pd-actions,
-.routing-actions {
+.zone-actions,
+.routing-actions,
+.report-actions {
   display: flex;
   align-items: center;
   gap: var(--ui-gap);
   flex-wrap: wrap;
 }
 
-/* ---------- Buttons & inputs ---------- */
+/* Buttons */
 .pd-control button,
+.zone-control button,
 .routing-control button,
 .report-control button {
-  appearance: none;
-  background: var(--btn-bg);
-  border: 1px solid var(--btn-border);
-  border-radius: 12px;
-  padding: 7px 12px;
-  cursor: pointer;
-  font: inherit;
-}
-.pd-control button:hover,
-.routing-control button:hover,
-.report-control button:hover { background: var(--btn-hover); }
-.pd-control button.active,
-.routing-control button.active { border-color: #888; box-shadow: inset 0 0 0 1px #888; }
-button.ghost { background: var(--btn-bg-ghost); }
-
-.pd-control input[type="text"],
-.routing-control input[type="text"] {
-  width: 100%;
-  padding: 7px 9px;
-  border: 1px solid var(--ui-border);
-  border-radius: 8px;
-  font: inherit;
-  box-sizing: border-box;
-}
-
-/* ---------- PD list ---------- */
-.pd-list {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 4px;
-  max-height: 300px;
-  overflow: auto;
-  padding: 2px;
-  border-top: 1px dashed var(--ui-border);
-  margin-top: 6px;
-}
-.pd-item { display: flex; align-items: center; gap: 8px; padding: 4px 2px; border-radius: 4px; }
-.pd-item:hover { background: rgba(0,0,0,.03); }
-.pd-cbx { flex: 0 0 auto; margin: 0 2px 0 0; width: 14px; height: 14px; }
-.pd-name { cursor: pointer; flex: 1; user-select: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pd-item.selected .pd-name { font-weight: 600; }
-
-/* ---------- PD selected label (center pin) ---------- */
-.pd-label .leaflet-tooltip {
-  background: rgba(255, 255, 255, 0.95);
-  border: 1px solid var(--ui-border);
-  border-radius: 6px;
-  box-shadow: var(--ui-shadow);
-  color: #000;
-  font-weight: 600;
-  padding: 4px 8px;
-}
-
-/* ---------- Zones (chips, popup) ---------- */
-.zone-label { }
-.zone-tag {
-  display: inline-block;
-  padding: 2px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--zone-stroke);
+  border: 1px solid rgba(0,0,0,.25);
   background: #fff;
-  font-weight: 600;
-  font-size: 12px;
-  line-height: 1.1;
-  box-shadow: var(--ui-shadow);
-  user-select: none;
+  border-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.2;
 }
-.zone-popup .leaflet-popup-content { font: 14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
 
-/* ---------- Zones control inline search ---------- */
-.pz-inline-search {
+.pd-control button:hover,
+.zone-control button:hover,
+.routing-control button:hover,
+.report-control button:hover {
+  background: rgba(0,0,0,.04);
+}
+
+button.ghost {
+  background: transparent;
+  border: 1px solid rgba(0,0,0,.20);
+}
+
+/* Inputs */
+.pd-control input,
+.zone-control input,
+.routing-control input,
+.report-control input {
+  font-size: 13px;
+}
+
+/* PD list rows */
+.pd-list { margin-top: 10px; }
+.pd-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px solid rgba(0,0,0,.06);
+}
+.pd-row:first-child { border-top: none; }
+
+.pd-row label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+.pd-row input[type="number"] {
+  width: 58px;
+  padding: 6px 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,0,0,.2);
+}
+
+/* Collapsible PD panel */
+.pd-control.collapsed .pd-list,
+.pd-control.collapsed #pd-list {
+  display: none !important;
+}
+
+/* Zone search row */
+.zone-search {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 8px;
+}
+.zone-search input {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,0,0,.2);
+}
+
+/* Keys details */
+.routing-card {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(0,0,0,.08);
+  border-radius: 12px;
+}
+.routing-card input {
   width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--ui-border);
-  border-radius: 6px;
-  font: inherit;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,0,0,.2);
   box-sizing: border-box;
 }
-
-/* ---------- Routing control (Trip Generator & Keys) ---------- */
-.routing-control .routing-section + .routing-section {
-  border-top: 1px dashed var(--ui-border);
-  margin-top: 10px;
-  padding-top: 10px;
-}
-.routing-row { display: flex; gap: var(--ui-gap); align-items: center; flex-wrap: wrap; margin-top: 8px; }
-.routing-hint { color: #666; font-size: 12.5px; margin-top: 4px; display: block; }
-
-/* Key manager sub-section */
-.key-row { display: grid; grid-template-columns: 1fr; gap: 8px; }
-#txt-ors-keys { font-family: ui-monospace, Menlo, Consolas, "Liberation Mono", monospace; }
-
-/* ---------- Leaflet tweaks ---------- */
-.leaflet-popup-content { margin: 8px 10px; }
-.leaflet-popup-content-wrapper { border-radius: 10px; }
-
-/* ---------- Top geocoder (match 250px) ---------- */
-.leaflet-control-geocoder { width: 250px; max-width: 250px; }
-.leaflet-control-geocoder-form input { font-size: 16px; padding: 8px 10px; height: 38px; }
-/* ---------- Compact left controls (UI polish) ---------- */
-:root{
-  --ui-width: 250px;
-  --ui-font: 12px;
-  --ui-title: 16px;
-  --ui-gap-tight: 6px;
-  --ui-btn-font: 11px;
-  --ui-btn-pad-y: 5px;
-  --ui-btn-pad-x: 6px;
+.routing-hint {
+  display: block;
+  margin-top: 6px;
+  opacity: 0.8;
 }
 
-/* Make all left cards consistent + slightly smaller text */
-.pd-control,
-.routing-control,
-.report-control{
-  width: var(--ui-width);
-  padding: 9px;
-  font: var(--ui-font)/1.25 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-}
-
-/* Headings */
-.pd-header strong,
-.routing-header strong{
-  font-size: var(--ui-title);
-  margin-bottom: 6px;
-}
-
-/* One-row action bars */
-.pd-actions,
-.routing-actions{
-  gap: var(--ui-gap-tight);
-  flex-wrap: nowrap;
-}
-
-/* Buttons smaller, allow label wrap inside each button so the row never wraps */
-.pd-control button,
-.routing-control button,
-.report-control button{
-  font-size: var(--ui-btn-font);
-  padding: var(--ui-btn-pad-y) var(--ui-btn-pad-x);
-  line-height: 1.1;
-  white-space: normal;
-}
-
-/* Make PD buttons share space evenly */
-.pd-actions > button{
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-/* Zones: keep Engage/Disengage compact, let the Zone # input fill the rest */
-.pd-control[data-role="zones"] .pd-actions > button{
-  flex: 0 0 auto;
-}
-.pz-inline-search{
-  flex: 1 1 auto;
-  min-width: 85px;
-  height: 30px;
-  padding: 5px 7px;
-  font-size: var(--ui-btn-font);
-}
-
-/* PD list + route count inputs a bit smaller */
-.pd-route-count{
-  width: 42px;
-  height: 28px;
-  padding: 3px 6px;
-  font-size: var(--ui-btn-font);
-}
-
-/* Trip generator buttons share width (labels may wrap within each button) */
-.routing-actions > button{
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-/* Report: single full-width button */
-.report-btn{
-  width: 100%;
-}
-
-/* Geocoder/search bar width + smaller input to match cards */
-.leaflet-control-geocoder{
-  width: var(--ui-width);
-  max-width: var(--ui-width);
-}
-.leaflet-control-geocoder-form input{
-  font-size: 13px;
-  padding: 6px 8px;
-  height: 34px;
+/* Leaflet zoom control to right (you already do this in JS too) */
+.leaflet-control-zoom {
+  margin-top: 10px !important;
 }
