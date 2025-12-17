@@ -417,6 +417,7 @@
    ******************************************************************/
   function buildTablesForTrip(trip) {
     const features = Array.isArray(trip.features) ? trip.features : [];
+    if (!features.length) return '';
 
     // Trip heading: based only on origin/destination lat/lon
     let headingChar = '';
@@ -501,23 +502,7 @@
       });
     });
 
-    if (!rows.length) {
-      const rawErr = (trip && trip.error) ? String(trip.error) : '';
-      // Try to keep the message short + user-friendly
-      let msg = 'No routable path found near the target point (ORS code 2010).';
-      if (rawErr && rawErr.includes('Could not find routable point')) {
-        msg = 'No routable road near the target point. The tool tried snapping to a nearby road inside the area, but couldn’t find a valid route.';
-      } else if (rawErr) {
-        msg = 'Route unavailable for this destination.';
-      }
-      rows.push({
-        heading: headingChar,
-        descPlain: '(' + msg + ')',
-        descHtml: escapeHtml('(' + msg + ')'),
-        distKm: NaN,
-        durMin: NaN
-      });
-    }
+    if (!rows.length) return '';
 
     const bodyHtml = rows.map(r => `
       <tr>
@@ -825,11 +810,8 @@
       div.innerHTML = `
         <div class="routing-header"><strong>Report</strong></div>
         <div class="routing-row">
-          <button type="button" id="rt-print-report">Print / View Report</button>
+          <button type="button" id="rt-print-report">Print Report</button>
         </div>
-        <small style="font-size:11px;color:#555;display:block;margin-top:6px;">
-          Uses the most recently generated trips from the Trip Generator.
-        </small>
       `;
       const btn = div.querySelector('#rt-print-report');
       if (btn) {
