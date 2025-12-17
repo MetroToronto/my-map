@@ -1,942 +1,847 @@
 (function (global) {
-  // ===== Config =====
-  const PROFILE    = 'driving-car';
-  const PREFERENCE = 'fastest';
-  const ORS_BASE   = 'https://api.openrouteservice.org';
+  'use strict';
 
-  const COLOR_FIRST  = '#0b3aa5';
-  const COLOR_OTHERS = '#2166f3';
+  /******************************************************************
+   * Basic helpers
+   ******************************************************************/
+  function toRad(d) { return d * Math.PI / 180; }
 
-  // UI labels (keep consistent with your left-side controls)
-  const LABEL_PD = 'PD Trips';
-  const LABEL_PZ = 'Zone Trips';
-  const LABEL_PD_BUSY = 'PD Trips…';
-  const LABEL_PZ_BUSY = 'Zone Trips…';
-
-  // ORS free-tier assumption: 40 requests / minute
-  const MAX_PER_MINUTE = 40;
-  const BASE_DELAY_MS  = 250;
-
-  const INLINE_DEFAULT_KEY =
-    'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6Ijk5NWI5MTE5OTM2YTRmYjNhNDRiZTZjNDRjODhhNTRhIiwiaCI6Im11cm11cjY0In0=';
-  const LS_KEYS         = 'ORS_KEYS';
-  const LS_ACTIVE_INDEX = 'ORS_ACTIVE_INDEX';
-
-  const S = {
-    map: null,
-    group: null,
-    keys: [],
-    keyIndex: 0,
-    lastMode: null,
-    lastTrips: [],
-    // rate-limit state
-    minuteStartMs: 0,
-    minuteCount  : 0
-  };
-
-  // ===== Tiny helpers =====
-  const byId = (id) => document.getElementById(id);
-
-  const escapeHtml = (str) => String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const qParam = (k) => new URLSearchParams(location.search).get(k) || '';
-  const isFiniteNum = (n) => Number.isFinite(n) && !Number.isNaN(n);
-  const num = (x) => {
-    const n = typeof x === 'string' ? parseFloat(x) : +x;
-    return Number.isFinite(n) ? n : NaN;
-  };
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-
-  function sanitizeLonLat(input) {
-    let arr = Array.isArray(input) ? input : [undefined, undefined];
-    let x = num(arr[0]), y = num(arr[1]);
-    // If lat/lon seem swapped, flip them.
-    if (isFiniteNum(x) && isFiniteNum(y) && Math.abs(x) <= 90 && Math.abs(y) > 90) {
-      const t = x; x = y; y = t;
-    }
-    if (!isFiniteNum(x) || !isFiniteNum(y)) {
-      throw new Error(`Invalid coordinate (NaN). Raw: ${JSON.stringify(input)}`);
-    }
-    x = clamp(x, -180, 180);
-    y = clamp(y, -85, 85);
-    return [x, y];
+  function isFiniteNum(n) {
+    return Number.isFinite(n) && !Number.isNaN(n);
   }
 
-  function getOriginLonLat() {
-    const o = global.ROUTING_ORIGIN;
-    if (!o) {
-      const err = new Error('Origin not set');
-      err.code = 'NO_ORIGIN';
-      throw err;
-    }
-    if (Array.isArray(o) && o.length >= 2) return sanitizeLonLat([o[0], o[1]]);
-    if (typeof o.getLatLng === 'function') {
-      const ll = o.getLatLng();
-      return sanitizeLonLat([ll.lng, ll.lat]);
-    }
-    if (isFiniteNum(num(o.lng)) && isFiniteNum(num(o.lat))) {
-      return sanitizeLonLat([o.lng, o.lat]);
-    }
-    if (o.latlng && isFiniteNum(num(o.latlng.lng)) && isFiniteNum(num(o.latlng.lat))) {
-      return sanitizeLonLat([o.latlng.lng, o.latlng.lat]);
-    }
-    if (o.center) {
-      if (Array.isArray(o.center) && o.center.length >= 2) {
-        return sanitizeLonLat([o.center[0], o.center[1]]);
-      }
-      if (isFiniteNum(num(o.center.lng)) && isFiniteNum(num(o.center.lat))) {
-        return sanitizeLonLat([o.center.lng, o.center.lat]);
-      }
-    }
-    if (o.geometry?.coordinates?.length >= 2) {
-      return sanitizeLonLat([o.geometry.coordinates[0], o.geometry.coordinates[1]]);
-    }
-    const x = o.lon ?? o.x, y = o.lat ?? o.y;
-    if (isFiniteNum(num(x)) && isFiniteNum(num(y))) {
-      return sanitizeLonLat([x, y]);
-    }
-    if (typeof o === 'string' && o.includes(',')) {
-      const [a, b] = o.split(',').map(s => s.trim());
-      try { return sanitizeLonLat([a, b]); } catch {}
-      return sanitizeLonLat([b, a]);
-    }
-    throw new Error(`Origin shape unsupported: ${JSON.stringify(o)}`);
+  function haversineMeters(a, b) {
+    if (!a || !b || a.length < 2 || b.length < 2) return 0;
+    const R = 6371000; // m
+    const lon1 = toRad(a[0]), lat1 = toRad(a[1]);
+    const lon2 = toRad(b[0]), lat2 = toRad(b[1]);
+    const dLat = lat2 - lat1;
+    const dLon = lon2 - lon1;
+    const sa = Math.sin(dLat / 2) ** 2 +
+               Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(sa), Math.sqrt(1 - sa));
+    return R * c;
   }
 
-  // ===== Key management =====
-  function savedKeys() {
-    try {
-      return JSON.parse(localStorage.getItem(LS_KEYS) || '[]');
-    } catch {
-      return [];
-    }
+  function km2(v) {
+    return (v || 0).toFixed(2);
   }
 
-  function hydrateKeys() {
-    const urlKey = qParam('orsKey');
-    const saved  = savedKeys();
-    const inline = [INLINE_DEFAULT_KEY];
-    S.keys = (urlKey ? [urlKey] : []).concat(saved.length ? saved : inline);
-    S.keyIndex = Math.min(+localStorage.getItem(LS_ACTIVE_INDEX) || 0, Math.max(0, S.keys.length - 1));
+  function escapeHtml(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
-  function currentKey() {
-    return S.keys[Math.min(Math.max(S.keyIndex, 0), S.keys.length - 1)] || '';
+  function cleanHtml(str) {
+    return String(str || '').replace(/<[^>]*>/g, '').trim();
   }
 
-  function rotateKey() {
-    if (S.keys.length <= 1) return false;
-    S.keyIndex = (S.keyIndex + 1) % S.keys.length;
-    localStorage.setItem(LS_ACTIVE_INDEX, String(S.keyIndex));
-    return true;
+  function normalizeName(raw) {
+    if (!raw) return '';
+    const s = String(raw).trim().replace(/\s+/g, ' ');
+    if (!s || /^unnamed\b/i.test(s) || /^[-–]+$/.test(s)) return '';
+    return s;
   }
 
-  // ===== Rate limiter + spinner overlay =====
-  let rateOverlayEl = null;
-  let rateOverlayTextEl = null;
-  let rateOverlayTimer = null;
-
-  function ensureSpinnerStyle() {
-    if (document.getElementById('ors-rate-style')) return;
-    const style = document.createElement('style');
-    style.id = 'ors-rate-style';
-    style.textContent = `
-      @keyframes ors-spin { 0%{transform:rotate(0deg);}100%{transform:rotate(360deg);} }
-      .ors-spinner {
-        width: 32px;
-        height: 32px;
-        border-radius: 50%;
-        border: 4px solid rgba(0,0,0,0.1);
-        border-top-color: #333;
-        animation: ors-spin 1s linear infinite;
-        margin: 0 auto 10px auto;
-      }
-    `;
-    document.head.appendChild(style);
+  // Strip trailing ", number" (e.g., "Jane Street, 55" → "Jane Street")
+  function stripTrailingCommaNumber(name) {
+    if (!name) return name;
+    const m = String(name).match(/^(.+?),\s*\d+\s*$/);
+    if (m) return m[1].trim();
+    return name;
   }
 
-  function showRateWaitOverlay(waitMs) {
-    ensureSpinnerStyle();
-    const target = Date.now() + waitMs;
-
-    if (!rateOverlayEl) {
-      const backdrop = document.createElement('div');
-      backdrop.id = 'ors-rate-overlay';
-      backdrop.style.position = 'fixed';
-      backdrop.style.inset = '0';
-      backdrop.style.zIndex = '9998';
-      backdrop.style.background = 'rgba(0,0,0,0.35)';
-      backdrop.style.display = 'flex';
-      backdrop.style.alignItems = 'center';
-      backdrop.style.justifyContent = 'center';
-
-      const box = document.createElement('div');
-      box.style.background = '#fff';
-      box.style.padding = '16px 20px';
-      box.style.borderRadius = '8px';
-      box.style.maxWidth = '360px';
-      box.style.width = '90%';
-      box.style.boxShadow = '0 8px 20px rgba(0,0,0,0.25)';
-      box.style.textAlign = 'center';
-      box.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-
-      box.innerHTML = `
-        <div class="ors-spinner"></div>
-        <h3 style="margin:0 0 8px 0;font-size:16px;">Waiting for OpenRouteService</h3>
-        <p id="ors-rate-text" style="margin:0;font-size:13px;color:#444;"></p>
-      `;
-
-      backdrop.appendChild(box);
-      document.body.appendChild(backdrop);
-
-      rateOverlayEl = backdrop;
-      rateOverlayTextEl = box.querySelector('#ors-rate-text');
-    }
-
-    rateOverlayEl.style.display = 'flex';
-
-    function updateText() {
-      const remaining = Math.max(0, target - Date.now());
-      const secs = Math.ceil(remaining / 1000);
-      if (rateOverlayTextEl) {
-        rateOverlayTextEl.textContent =
-          `Rate limit reached. Continuing in about ${secs}s…`;
-      }
-      if (remaining <= 0 && rateOverlayTimer) {
-        clearInterval(rateOverlayTimer);
-        rateOverlayTimer = null;
-      }
-    }
-
-    updateText();
-    if (rateOverlayTimer) clearInterval(rateOverlayTimer);
-    rateOverlayTimer = setInterval(updateText, 1000);
+  function finalNameCleanup(name) {
+    if (!name) return name;
+    let n = stripTrailingCommaNumber(name);
+    n = n.replace(/\s+/g, ' ').trim();
+    return n;
   }
 
-  function hideRateWaitOverlay() {
-    if (rateOverlayTimer) {
-      clearInterval(rateOverlayTimer);
-      rateOverlayTimer = null;
-    }
-    if (rateOverlayEl) {
-      rateOverlayEl.style.display = 'none';
-    }
-  }
+  /******************************************************************
+   * Highway centreline support
+   ******************************************************************/
+  let HIGHWAYS = null;
+  let HIGHWAYS_PROMISE = null;
 
-  const RateLimiter = {
-    async beforeRequest() {
-      const now = Date.now();
-
-      if (!S.minuteStartMs || now - S.minuteStartMs >= 60_000) {
-        S.minuteStartMs = now;
-        S.minuteCount = 0;
-      }
-
-      if (S.minuteCount >= MAX_PER_MINUTE) {
-        const resetAt = S.minuteStartMs + 60_000;
-        const waitMs  = Math.max(0, resetAt - now);
-        if (waitMs > 0) {
-          showRateWaitOverlay(waitMs);
-          await sleep(waitMs);
-          hideRateWaitOverlay();
-        }
-        S.minuteStartMs = Date.now();
-        S.minuteCount   = 0;
-      }
-
-      S.minuteCount += 1;
-      if (BASE_DELAY_MS > 0) await sleep(BASE_DELAY_MS);
-    }
-  };
-
-  // ===== ORS fetch with retries & 429 handling =====
-  async function orsFetch(path, { method = 'GET', body } = {}, attempt = 0) {
-    const url = new URL(ORS_BASE + path);
-
-    let res;
-    try {
-      res = await fetch(url.toString(), {
-        method,
-        headers: {
-          Authorization: currentKey(),
-          ...(method !== 'GET' && { 'Content-Type': 'application/json' })
-        },
-        body: method === 'GET' ? undefined : JSON.stringify(body)
-      });
-    } catch (e) {
-      // Network / CORS / transient failure (“Failed to fetch”, etc.)
-      if (attempt < 2) {
-        const waitMs = 10_000 * (attempt + 1); // 10s, then 20s
-        showRateWaitOverlay(waitMs);
-        await sleep(waitMs);
-        hideRateWaitOverlay();
-        return orsFetch(path, { method, body }, attempt + 1);
-      }
-      throw new Error(e && e.message ? e.message : 'Failed to fetch');
-    }
-
-    // 429 Too Many Requests
-    if (res.status === 429) {
-      // If we have multiple keys, rotate
-      if (rotateKey()) {
-        await sleep(150);
-        return orsFetch(path, { method, body }, attempt + 1);
-      }
-      // Single key: honour Retry-After or wait ~60s
-      if (attempt < 2) {
-        let waitMs = 60_000;
-        const retryAfter = res.headers.get('retry-after');
-        if (retryAfter) {
-          const parsed = parseInt(retryAfter, 10);
-          if (!Number.isNaN(parsed) && parsed >= 0) {
-            waitMs = parsed * 1000;
-          }
-        }
-        showRateWaitOverlay(waitMs);
-        await sleep(waitMs);
-        hideRateWaitOverlay();
-        return orsFetch(path, { method, body }, attempt + 1);
-      }
-    }
-
-    // 401/403 with multiple keys → rotate and retry
-    if ([401, 403].includes(res.status) && rotateKey()) {
-      await sleep(150);
-      return orsFetch(path, { method, body }, attempt + 1);
-    }
-
-    if (!res.ok) {
-      const txt = await res.text().catch(() => res.statusText);
-      throw new Error(`ORS ${res.status}: ${txt}`);
-    }
-
-    return res.json();
-  }
-
-  // ===== Directions wrapper =====
-  async function getRoutes(originLonLat, destLonLat, maxCount, opts = {}) {
-    const o = sanitizeLonLat(originLonLat);
-    const d = sanitizeLonLat(destLonLat);
-
-    const baseBody = {
-      coordinates: [o, d],
-      preference: PREFERENCE,
-      instructions: true,
-      instructions_format: 'html',
-      language: 'en',
-      geometry_simplify: false,
-      elevation: false,
-      units: 'km'
-    };
-    if (maxCount > 1) {
-      baseBody.alternative_routes = {
-        target_count: Math.min(Math.max(1, maxCount), 3),
-        share_factor: 0.6
-      };
-    }
-
-    const layer  = opts.layer || null;
-    const pdSide = (opts.pdSide === 'origin') ? 'origin' : 'dest'; // which end is the PD/zone point
-
-    const doFetch = (body) =>
-      orsFetch(`/v2/directions/${PROFILE}/geojson`, { method: 'POST', body });
-
-    const makeRadiuses = (r) => (pdSide === 'origin' ? [r, 350] : [350, r]);
-
-    try {
-      return await doFetch(baseBody);
-    } catch (e) {
-      const msg = String(e.message || '');
-
-      const is2099 = msg.includes('ORS 500') && (msg.includes('"code":2099') || msg.includes('code:2099'));
-      const is2010 = msg.includes('ORS 404') && (
-        msg.includes('"code":2010') ||
-        msg.includes('code:2010') ||
-        msg.includes('Could not find routable point')
-      );
-
-      // 2010: destination/origin isn't close enough to a routable road (centroid in woods/water/etc.)
-      if (is2010) {
-        // 1) Retry by allowing a larger snap radius on the PD-side point
-        for (const r of [1000, 5000, 8000]) {
+  async function ensureHighwaysLoaded() {
+    if (HIGHWAYS !== null) return;
+    if (!HIGHWAYS_PROMISE) {
+      const candidates = [
+        'data/highway_centrelines.json',
+        'data/highway_centerlines.json',
+        'data/highway_centreline.json'
+      ];
+      HIGHWAYS_PROMISE = (async () => {
+        for (const path of candidates) {
           try {
-            await RateLimiter.beforeRequest();
-            const j = await doFetch({ ...baseBody, radiuses: makeRadiuses(r) });
-            if (!layer || endsInsideLayer(j, layer)) return j;
-          } catch (_) {}
-        }
-
-        // 2) If we have the PD polygon layer, try alternate points INSIDE the polygon
-        if (layer) {
-          const candidates = candidatePointsInLayer(layer, 8);
-          for (const p of candidates) {
-            const coords = (pdSide === 'origin') ? [p, d] : [o, p];
-            for (const r of [8000]) {
-              try {
-                await RateLimiter.beforeRequest();
-            const j = await doFetch({ ...baseBody, coordinates: coords, radiuses: makeRadiuses(r) });
-                if (endsInsideLayer(j, layer)) return j;
-              } catch (_) {}
-            }
+            const res = await fetch(path);
+            if (!res.ok) continue;
+            const json = await res.json();
+            HIGHWAYS = Array.isArray(json.features) ? json.features : [];
+            return;
+          } catch (e) {
+            // try next
           }
         }
-
-        // If we get here, we truly couldn't find a routable point close enough.
-        throw e;
-      }
-
-      // 2099: handle swapped lon/lat fallback (existing behavior)
-      if (!is2099) throw e;
-      const dSwap = sanitizeLonLat([d[1], d[0]]);
-      const bodySwap = { ...baseBody, coordinates: [o, dSwap] };
-      await RateLimiter.beforeRequest();
-      return await doFetch(bodySwap);
+        HIGHWAYS = [];
+      })();
     }
+    await HIGHWAYS_PROMISE;
   }
 
-// ===== Drawing / state =====
-  function clearRoutes() {
-    if (S.group) {
-      try { S.map.removeLayer(S.group); } catch {}
-      S.group = null;
-    }
-    S.lastTrips = [];
-    S.lastMode  = null;
-    global.ROUTING_CACHE = undefined;
-  }
+  function nearestHighwayName(lon, lat) {
+    if (!HIGHWAYS || !HIGHWAYS.length) return '';
 
-  function drawRoute(coords, color) {
-    if (!coords?.length) return;
-    if (!S.group) S.group = L.layerGroup().addTo(S.map);
-    const latlngs = coords.map(([lng, lat]) => [lat, lng]);
-    L.polyline(latlngs, { color, weight: 4, opacity: 0.9 }).addTo(S.group);
-  }
+    let bestName = '';
+    let bestD2 = Infinity;
 
-  // ===== PD route-count + requests =====
-  function collectPDRequests() {
-    const registry = global.PD_REGISTRY || {};
-    const items    = Array.from(document.querySelectorAll('.pd-item'));
-    const invalid  = [];
-    const requests = [];
+    for (const f of HIGHWAYS) {
+      if (!f || !f.geometry || !Array.isArray(f.geometry.coordinates)) continue;
+      const coords = f.geometry.coordinates;
+      const props = f.properties || {};
+      const candName = normalizeName(props.Name || props.name);
+      if (!candName) continue;
 
-    // validate route-count fields
-    for (const item of items) {
-      const cbx   = item.querySelector('.pd-cbx');
-      const input = item.querySelector('.pd-route-count');
-      const keyEnc = cbx?.dataset.key || item.dataset.key || '';
-      const key    = decodeURIComponent(keyEnc || '');
-      const reg    = registry[key];
-      const name   = reg?.name || key || 'Unknown PD';
-
-      if (!input) continue;
-
-      let raw = input.value.trim();
-      if (raw === '') {
-        raw = cbx && cbx.checked ? '1' : '0';
-        input.value = raw;
-      }
-      const n = Number(raw);
-      if (!Number.isFinite(n) || Math.floor(n) !== n || n < 0 || n > 3) {
-        invalid.push({ key, name, value: raw });
+      for (const c of coords) {
+        if (!Array.isArray(c) || c.length < 2) continue;
+        const dx = c[0] - lon;
+        const dy = c[1] - lat;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestName = candName;
+        }
       }
     }
 
-    if (invalid.length) {
-      const err = new Error('Invalid PD route counts');
-      err.type  = 'validation';
-      err.invalid = invalid;
-      throw err;
-    }
-
-    // build requests from checked PDs
-    for (const item of items) {
-      const cbx = item.querySelector('.pd-cbx');
-      if (!cbx || !cbx.checked) continue;
-
-      const keyEnc = cbx.dataset.key || item.dataset.key || '';
-      const key    = decodeURIComponent(keyEnc || '');
-      const reg    = registry[key];
-      if (!reg || !reg.layer) continue;
-
-      const center = reg.layer.getBounds().getCenter();
-      const name   = reg.name || key || 'PD';
-
-      let count = 1;
-      const input = item.querySelector('.pd-route-count');
-      if (input) {
-        const raw = input.value.trim() || '1';
-        const n   = Number(raw);
-        if (!Number.isFinite(n) || n <= 0) continue;
-        count = Math.min(Math.max(1, Math.floor(n)), 3);
-      }
-
-      requests.push({
-        key,
-        name,
-        lon: center.lng,
-        lat: center.lat,
-        count
-      });
-    }
-
-    return requests;
+    const MAX_DEG2 = 0.005 * 0.005; // ~500m
+    if (bestName && bestD2 <= MAX_DEG2) return bestName;
+    return '';
   }
 
-  // ===== Zone targets =====
-  function collectZoneTargets() {
-    if (typeof global.getSelectedZoneTargets !== 'function') {
-      const err = new Error('Zone helper missing');
-      err.type  = 'noZonesHelper';
-      throw err;
+  /******************************************************************
+   * Direction + street-name helpers
+   ******************************************************************/
+  function axisCardinal(a, b) {
+    if (!a || !b || a.length < 2 || b.length < 2) return '';
+    const dLon = b[0] - a[0];
+    const dLat = b[1] - a[1];
+    if (Math.abs(dLon) < 1e-8 && Math.abs(dLat) < 1e-8) return '';
+    if (Math.abs(dLat) >= Math.abs(dLon)) {
+      return dLat >= 0 ? 'NB' : 'SB';
     }
-    const raw = global.getSelectedZoneTargets() || [];
+    return dLon >= 0 ? 'EB' : 'WB';
+  }
+
+  // 3-tier rule:
+  //  < 20 m      → simple start→end
+  //  20–200 m    → window 20–50 m
+  //  ≥ 200 m     → window 200–500 m
+  function directionFromSegment(segCoords) {
+    if (!segCoords || segCoords.length < 2) return '';
+
+    const n = segCoords.length;
+    const lens = new Array(n - 1);
+    let total = 0;
+    for (let i = 1; i < n; i++) {
+      const d = haversineMeters(segCoords[i - 1], segCoords[i]);
+      lens[i - 1] = d;
+      total += d;
+    }
+    if (total < 1) return '';
+
+    // Very tiny segments: just use start→end
+    if (total < 20) {
+      return axisCardinal(segCoords[0], segCoords[n - 1]);
+    }
+
+    let winStart, winEnd;
+    if (total < 200) {
+      // Short segments: 20–50 m window
+      winStart = 20;
+      winEnd   = Math.min(total, 50);
+    } else {
+      // Long segments: 200–500 m window
+      winStart = 200;
+      winEnd   = Math.min(total, 500);
+    }
+
+    if (winStart >= winEnd) {
+      return axisCardinal(segCoords[0], segCoords[n - 1]);
+    }
+
+    let acc = 0;
+    let dxSum = 0;
+    let dySum = 0;
+
+    for (let i = 1; i < n; i++) {
+      const d = lens[i - 1];
+      const mid = acc + d / 2;
+      if (mid >= winStart && mid <= winEnd) {
+        const a = segCoords[i - 1];
+        const b = segCoords[i];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        dxSum += dx * d;
+        dySum += dy * d;
+      }
+      acc += d;
+    }
+
+    // If we got no usable window, fall back
+    if (Math.abs(dxSum) < 1e-12 && Math.abs(dySum) < 1e-12) {
+      return axisCardinal(segCoords[0], segCoords[n - 1]);
+    }
+
+    if (Math.abs(dySum) >= Math.abs(dxSum)) {
+      return dySum >= 0 ? 'NB' : 'SB';
+    }
+    return dxSum >= 0 ? 'EB' : 'WB';
+  }
+
+  const GENERIC_INSTR_RE =
+    /^(keep (left|right)|slight (left|right)|turn (left|right)|continue\b|take (the )?ramp\b|enter (the )?roundabout\b)$/i;
+
+  function stepNameNatural(step) {
+    if (!step) return '';
+    let name = normalizeName(step.name || step.road);
+    if (name && GENERIC_INSTR_RE.test(name)) return '';
+
+    if (!name) {
+      const instr = cleanHtml(step.instruction || '');
+      if (instr) {
+        let m = instr.match(/\bonto\s+([^,]+?)(?:\s+for\b|,|$)/i);
+        if (!m) m = instr.match(/\bvia\s+([^,]+?)(?:\s+for\b|,|$)/i);
+        if (!m) m = instr.match(/\bonto\s+(.+)$/i);
+        if (!m) m = instr.match(/\bvia\s+(.+)$/i);
+        const cand = m ? m[1] : instr;
+        name = normalizeName(cand);
+        if (name && GENERIC_INSTR_RE.test(name)) return '';
+      }
+    }
+
+    if (name) {
+      name = finalNameCleanup(name);
+    }
+
+    return name;
+  }
+
+  // Normalize to a "highway group" name (for merging)
+  function highwayBase(nameUpper) {
+    let n = nameUpper;
+    if (/GARDINER/.test(n)) {
+      n = n
+        .replace(/\bEXPRESSWAY\b/g, '')
+        .replace(/\bEXPRESS\b/g, '')
+        .replace(/\bCOLLECTOR\b/g, '')
+        .replace(/\bF G\b/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return n || 'GARDINER';
+    }
+    if (/HIGHWAY\s+401\b/.test(n)) {
+      return 'HIGHWAY 401';
+    }
+    return null;
+  }
+
+  // Key for merging consecutive movements
+  // For highways (Gardiner + 401), ignore direction so they always merge
+  function mergeKey(m) {
+    const dir = m.dir || '';
+    let nameUpper = (m.name || '').toUpperCase().replace(/\s+/g, ' ').trim();
+    const hw = highwayBase(nameUpper);
+    if (hw) {
+      return 'HW|' + hw;   // highway group, direction-insensitive
+    }
+    return dir + '|' + nameUpper;
+  }
+
+  function mergeConsecutive(movs) {
     const out = [];
-
-    for (const t of raw) {
-      if (!t) continue;
-      if (Array.isArray(t) && t.length >= 2) {
-        out.push({
-          lon: t[0],
-          lat: t[1],
-          label: t[2] || 'Zone'
-        });
-      } else if (typeof t === 'object') {
-        const lon = t.lon ?? t.lng ?? t.x ?? (t.center && t.center[0]);
-        const lat = t.lat ?? t.y ?? (t.center && t.center[1]);
-        if (!isFiniteNum(num(lon)) || !isFiniteNum(num(lat))) continue;
-        out.push({
-          lon: num(lon),
-          lat: num(lat),
-          label: t.label || t.name || 'Zone'
-        });
+    for (const m of movs) {
+      if (!m || !m.name || !m.km || m.km <= 0) continue;
+      if (out.length) {
+        const last = out[out.length - 1];
+        if (mergeKey(last) === mergeKey(m)) {
+          last.km += m.km;
+          continue;
+        }
       }
+      out.push({ dir: m.dir, name: m.name, km: m.km });
     }
     return out;
   }
 
-  // ===== Overlays =====
-  function showValidationPopup(invalid) {
-    if (!invalid || !invalid.length) return;
-    const existing = document.getElementById('routing-validation-overlay');
-    if (existing) existing.remove();
+  /******************************************************************
+   * ORS → movements
+   ******************************************************************/
+  function extractStepsFromFeature(feature) {
+    if (!feature || !feature.properties) return [];
+    const props = feature.properties;
+    if (Array.isArray(props.steps) && props.steps.length) return props.steps;
+    const segments = Array.isArray(props.segments) ? props.segments : [];
+    const out = [];
+    for (const seg of segments) {
+      if (seg && Array.isArray(seg.steps)) out.push(...seg.steps);
+    }
+    return out;
+  }
 
-    const backdrop = document.createElement('div');
-    backdrop.id = 'routing-validation-overlay';
-    backdrop.style.position = 'fixed';
-    backdrop.style.inset = '0';
-    backdrop.style.zIndex = '9999';
-    backdrop.style.background = 'rgba(0,0,0,0.35)';
-    backdrop.style.display = 'flex';
-    backdrop.style.alignItems = 'center';
-    backdrop.style.justifyContent = 'center';
+  function buildMovementsFromDirections(coords, steps) {
+    if (!coords || !coords.length || !steps || !steps.length) return [];
 
-    const box = document.createElement('div');
-    box.style.background = '#fff';
-    box.style.padding = '16px 20px';
-    box.style.borderRadius = '8px';
-    box.style.maxWidth = '420px';
-    box.style.width = '90%';
-    box.style.boxShadow = '0 8px 20px rgba(0,0,0,0.25)';
-    box.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    box.innerHTML = `
-      <h3 style="margin:0 0 8px 0;">Trip generation blocked</h3>
-      <p style="margin:0 0 8px 0;font-size:0.95em;">
-        Trip generation is not possible because the following Planning District(s)
-        have an invalid route count. Please use only <strong>0, 1, 2, or 3</strong>.
-      </p>
-      <ul style="margin:0 0 12px 20px;padding:0;font-size:0.95em;">
-        ${invalid.map(i => `<li>${escapeHtml(i.name || i.key || 'PD')} — value: "${escapeHtml(i.value)}"</li>`).join('')}
-      </ul>
-      <div style="text-align:right;">
-        <button id="routing-validation-close">Close</button>
-      </div>
+    const MIN_SEG_KM = 0.03; // < 30 m → ghost
+    const rows = [];
+
+    for (const step of steps) {
+      if (!step) continue;
+
+      const wp = step.way_points || step.wayPoints || [];
+      const len = coords.length;
+      const a = wp[0] ?? 0;
+      const b = wp[1] ?? (len - 1);
+      const startIdx = Math.max(0, Math.min(len - 1, a));
+      const endIdx   = Math.max(startIdx, Math.min(len - 1, b));
+      if (endIdx <= startIdx) continue;
+
+      let km = Number(step.distance); // ORS distance in km
+      if (!isFiniteNum(km) || km <= 0) {
+        let meters = 0;
+        for (let i = startIdx + 1; i <= endIdx; i++) {
+          meters += haversineMeters(coords[i - 1], coords[i]);
+        }
+        km = meters / 1000;
+      }
+      if (!isFiniteNum(km) || km < MIN_SEG_KM) continue;
+
+      const segCoords = coords.slice(startIdx, endIdx + 1);
+      const dir = directionFromSegment(segCoords) || '';
+
+      let name = stepNameNatural(step);
+
+      if (!name) {
+        const midIdx = Math.floor((startIdx + endIdx) / 2);
+        const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
+        if (mid && mid.length >= 2) {
+          const hName = nearestHighwayName(mid[0], mid[1]);
+          if (hName) name = finalNameCleanup(hName);
+        }
+      }
+
+      if (!name) {
+        const instr = cleanHtml(step.instruction || '');
+        name = finalNameCleanup(instr || 'Unnamed segment');
+      }
+
+      rows.push({ dir, name, km });
+    }
+
+    return mergeConsecutive(rows);
+  }
+
+  /******************************************************************
+   * Origin parsing for titles/meta
+   ******************************************************************/
+  function parseOriginLabel(label) {
+    if (!label) return { address: '', postal: '' };
+    const parts = label.split(',').map(p => p.trim()).filter(Boolean);
+    if (!parts.length) return { address: label.trim(), postal: '' };
+
+    // Detect postal code (Canadian style A1A 1A1)
+    const postalIdx = parts.findIndex(p => /[A-Z]\d[A-Z]\s*\d[A-Z]\d/i.test(p));
+    const postal = postalIdx >= 0 ? parts[postalIdx] : '';
+
+    const addrParts = postalIdx >= 0 ? parts.slice(0, postalIdx) : parts.slice();
+    if (!addrParts.length) return { address: label.trim(), postal };
+
+    // Find first part with a digit
+    let idx = addrParts.findIndex(p => /\d/.test(p));
+    if (idx < 0) idx = 0;
+
+    let addressMain = addrParts[idx];
+
+    // Special case: Highway <num> , <num> , <Street>
+    if (/Highway/i.test(addressMain) && idx + 2 < addrParts.length &&
+        /^\d+$/.test(addrParts[idx + 1])) {
+      addressMain = addressMain + ' ' + addrParts[idx + 1] + ' ' + addrParts[idx + 2];
+    } else if (/^\d+$/.test(addressMain) && idx + 1 < addrParts.length) {
+      // Pure number then street
+      addressMain = addressMain + ' ' + addrParts[idx + 1];
+    }
+
+    addressMain = addressMain.replace(/\s+/g, ' ').trim();
+    return { address: addressMain, postal: postal.replace(/\s+/g, ' ').trim() };
+  }
+
+  // Returns:
+  //   label: "PD 1" (no colon)
+  //   cityText: "City of Toronto"
+  //   num: "1"
+  //   cityBare: "Toronto"
+  function pdCityMetaFromTitle(title) {
+    if (!title) return { label: '', cityText: '', num: '', cityBare: '' };
+    const t = title.trim();
+    let pdNum = '';
+    let cityName = '';
+
+    const m = t.match(/^PD\s+(\d+)\s+of\s+(.+)$/i);
+    if (m) {
+      pdNum = m[1];
+      cityName = m[2].trim();
+    } else {
+      const mNum = t.match(/(\d+)/);
+      if (mNum) pdNum = mNum[1];
+      const mOf = t.match(/\bof\s+(.+)$/i);
+      cityName = (mOf ? mOf[1] : t).trim();
+    }
+
+    const cityBare = cityName.replace(/^(City|Town|Region|County)\s+of\s+/i, '').trim();
+    let cityText = cityName;
+    if (!/^(City|Town|Region|County)\s+of\s+/i.test(cityName)) {
+      cityText = 'City of ' + cityName;
+    }
+
+    const label = pdNum ? ('PD ' + pdNum) : 'PD';
+    return { label, cityText, num: pdNum, cityBare };
+  }
+
+  /******************************************************************
+   * Build summary table for one trip
+   ******************************************************************/
+  function buildTablesForTrip(trip) {
+    const features = Array.isArray(trip.features) ? trip.features : [];
+    if (!features.length) return '';
+
+    // Trip heading: based only on origin/destination lat/lon
+    let headingChar = '';
+    if (trip && trip.origin && trip.destination &&
+        isFiniteNum(trip.origin.lon) && isFiniteNum(trip.origin.lat) &&
+        isFiniteNum(trip.destination.lon) && isFiniteNum(trip.destination.lat)) {
+
+      let a = [trip.origin.lon, trip.origin.lat];
+      let b = [trip.destination.lon, trip.destination.lat];
+      if (trip.reverse) {
+        const tmp = a;
+        a = b;
+        b = tmp;
+      }
+      const h = axisCardinal(a, b);
+      headingChar = h ? h.charAt(0) : '';
+    }
+
+    const rows = [];
+
+    features.forEach((feat) => {
+      const coords = feat.geometry && Array.isArray(feat.geometry.coordinates)
+        ? feat.geometry.coordinates
+        : [];
+      if (!coords.length) return;
+
+      const steps = extractStepsFromFeature(feat);
+      const movs  = buildMovementsFromDirections(coords, steps);
+
+      const props   = feat.properties || {};
+      const summary = props.summary ||
+                      (Array.isArray(props.segments) && props.segments[0]) ||
+                      {};
+
+      let distKm = Number(summary.distance);
+      if (!isFiniteNum(distKm) || distKm <= 0) {
+        distKm = 0;
+        if (coords && coords.length > 1) {
+          for (let i = 1; i < coords.length; i++) {
+            distKm += haversineMeters(coords[i - 1], coords[i]) / 1000;
+          }
+        } else {
+          distKm = NaN;
+        }
+      }
+      const durMin = isFiniteNum(summary.duration)
+        ? Number(summary.duration) / 60
+        : NaN;
+
+      let descPlain;
+      let descHtml;
+
+      if (!movs.length) {
+        const base = '(No named street segments found for this route.)';
+        descPlain = base;
+        descHtml  = escapeHtml(base);
+      } else {
+        const piecesPlain = [];
+        const piecesHtml  = [];
+        for (const m of movs) {
+          const dirPart = m.dir ? (m.dir + ' ') : '';
+          const plain = `${dirPart}${m.name} (${km2(m.km)} km)`;
+          piecesPlain.push(plain);
+
+          const dirEsc  = m.dir ? (escapeHtml(m.dir) + ' ') : '';
+          const nameEsc = escapeHtml(m.name);
+          const kmEsc   = km2(m.km);
+          const htmlSeg = `${dirEsc}${nameEsc}<span class="seg-km"> (${kmEsc} km)</span>`;
+          piecesHtml.push(htmlSeg);
+        }
+        // IMPORTANT CHANGE: no "Route:" prefix here
+        descPlain = piecesPlain.join(', ');
+        descHtml  = piecesHtml.join(', ');
+      }
+
+      rows.push({
+        heading: headingChar,
+        descPlain,
+        descHtml,
+        distKm,
+        durMin
+      });
+    });
+
+    if (!rows.length) return '';
+
+    const bodyHtml = rows.map(r => `
+      <tr>
+        <td>${escapeHtml(r.heading || '')}</td>
+        <td data-desc="${escapeHtml(r.descPlain || '')}">${r.descHtml || ''}</td>
+        <td style="text-align:right">${isFiniteNum(r.distKm) ? km2(r.distKm) : ''}</td>
+        <td style="text-align:right">${isFiniteNum(r.durMin) ? r.durMin.toFixed(1) : ''}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <h3>Routes</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Trip dir</th>
+            <th>Street-by-street</th>
+            <th style="text-align:right">Total km</th>
+            <th style="text-align:right">Total min</th>
+          </tr>
+        </thead>
+        <tbody>${bodyHtml}</tbody>
+      </table>
+    `;
+  }
+
+  /******************************************************************
+   * Build cards for all trips
+   ******************************************************************/
+  function buildCardsHtml(cache) {
+    if (!cache || !Array.isArray(cache.trips) || !cache.trips.length) return '';
+
+    return cache.trips.map(trip => {
+      const isPD  = trip.type === 'PD';
+      const title = isPD
+        ? (trip.name || trip.key || 'Planning District')
+        : (trip.label || 'Planning Zone');
+
+      const originLabel = trip.origin && (trip.origin.label ||
+        `${trip.origin.lon}, ${trip.origin.lat}`) || '';
+
+      const { address: originAddr, postal: originPostal } =
+        parseOriginLabel(originLabel);
+
+      let areaLabel = '';
+      let cityText = '';
+      let areaNum = '';
+      let cityBare = '';
+
+      if (isPD) {
+        const meta = pdCityMetaFromTitle(title);
+        areaLabel = meta.label;       // "PD 1"
+        cityText  = meta.cityText;    // "City of Toronto"
+        areaNum   = meta.num || '';   // "1"
+        cityBare  = meta.cityBare;    // "Toronto"
+      } else {
+        const num = trip.key != null ? String(trip.key) :
+                    (trip.id != null ? String(trip.id) : '');
+        areaNum   = num;
+        areaLabel = num ? ('PZ ' + num) : 'PZ';
+
+        const cityNameRaw = trip.label || title;
+        cityBare = cityNameRaw.replace(/^(City|Town|Region|County)\s+of\s+/i, '').trim();
+        let displayName = cityNameRaw;
+        if (!/^(City|Town|Region|County)\s+of\s+/i.test(cityNameRaw)) {
+          displayName = 'City of ' + cityNameRaw;
+        }
+        cityText = displayName;
+      }
+
+      const fromLine = originAddr
+        ? `From: ${originAddr}${originPostal ? ', ' + originPostal : ''}`
+        : '';
+      const toLine = `To: ${areaLabel}${cityText ? ', ' + cityText : ''}`;
+
+      const tableHtml = buildTablesForTrip(trip);
+      if (!tableHtml) return '';
+
+      return `
+        <div class="card"
+             data-area-type="${isPD ? 'PD' : 'PZ'}"
+             data-area-num="${escapeHtml(areaNum)}"
+             data-area-city="${escapeHtml(cityBare)}">
+          <h2>${escapeHtml(title)}</h2>
+          ${fromLine ? `<p class="meta-line">${escapeHtml(fromLine)}</p>` : ''}
+          ${toLine ? `<p class="meta-line">${escapeHtml(toLine)}</p>` : ''}
+          ${tableHtml}
+        </div>
+      `;
+    }).join('');
+  }
+
+  /******************************************************************
+   * Print / open report
+   ******************************************************************/
+  async function printReport() {
+    const cache = global.ROUTING_CACHE;
+    if (!cache || !cache.trips || !cache.trips.length) {
+      alert('No trips available. Please generate trips first.');
+      return;
+    }
+
+    await ensureHighwaysLoaded().catch(() => {});
+
+    const cardsHtml = buildCardsHtml(cache);
+    if (!cardsHtml) {
+      alert('Unable to build report. Trip data is missing or incomplete.');
+      return;
+    }
+
+    // Determine whether these are PD or PZ trips
+    let hasPD = false, hasPZ = false;
+    for (const t of cache.trips) {
+      if (t && t.type === 'PD') hasPD = true;
+      if (t && t.type === 'PZ') hasPZ = true;
+    }
+    let targetLabel;
+    if (hasPD && !hasPZ) targetLabel = 'Planning Districts';
+    else if (!hasPD && hasPZ) targetLabel = 'Traffic Zones';
+    else targetLabel = 'Planning Districts / Traffic Zones';
+
+    const originObj = global.ROUTING_ORIGIN || {};
+    const originLabel =
+      originObj.label || originObj.name || originObj.address ||
+      originObj.query || 'selected origin';
+
+    const originParsed = parseOriginLabel(originLabel);
+    const originShort = originParsed.address || originLabel;
+
+    const title = `Trip Route Distribution for ${originShort} to ${targetLabel}`;
+
+    const css = `
+      <style>
+        * { box-sizing: border-box; }
+        body {
+          margin: 0;
+          padding: 16px 20px;
+          font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+                Roboto, Helvetica, Arial, sans-serif;
+          background: #fafafa;
+        }
+        h1 {
+          font-size: 20px;
+          margin: 0 0 10px 0;
+        }
+        h2 {
+          font-size: 16px;
+          margin: 14px 0 4px 0;
+        }
+        h3 {
+          font-size: 14px;
+          margin: 10px 0 4px 0;
+        }
+        p.meta-line {
+          margin: 0;
+          font-size: 12px;
+          color: #555;
+        }
+        p.meta-line + p.meta-line {
+          margin-top: 2px;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 8px;
+          margin-bottom: 16px;
+          background: #fff;
+        }
+        th, td {
+          border: 1px solid #ddd;
+          padding: 6px 8px;
+          font-size: 12px;
+          vertical-align: top;
+        }
+        thead th {
+          background: #f7f7f7;
+        }
+        .card {
+          page-break-inside: avoid;
+          margin-bottom: 22px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid #eee;
+          background: #fff;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+          padding: 10px 12px 12px 12px;
+        }
+        .toolbar {
+          margin: 0 0 14px 0;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .toolbar button {
+          font-size: 12px;
+          padding: 4px 10px;
+          border-radius: 12px;
+          border: 1px solid #ccc;
+          background: #fff;
+          cursor: pointer;
+        }
+        .toolbar button:hover {
+          background: #f0f0f0;
+        }
+        .seg-km {
+          white-space: nowrap;
+        }
+        body.km-disabled .seg-km {
+          display: none;
+        }
+      </style>
     `;
 
-    backdrop.appendChild(box);
-    document.body.appendChild(backdrop);
-
-    const closeBtn = box.querySelector('#routing-validation-close');
-    if (closeBtn) closeBtn.addEventListener('click', () => backdrop.remove());
-    backdrop.addEventListener('click', (e) => {
-      if (e.target === backdrop) backdrop.remove();
-    });
-  }
-
-  // Overlay for “only one PD” rule for Zone Trips
-  function showSinglePDPopup(selectedKeys) {
-    const existing = document.getElementById('routing-pd-overlay');
-    if (existing) existing.remove();
-
-    const registry = global.PD_REGISTRY || {};
-    const names = (selectedKeys || []).map(k => {
-      const reg = registry[k];
-      return reg?.name || k || 'PD';
-    });
-
-    const backdrop = document.createElement('div');
-    backdrop.id = 'routing-pd-overlay';
-    backdrop.style.position = 'fixed';
-    backdrop.style.inset = '0';
-    backdrop.style.zIndex = '9999';
-    backdrop.style.background = 'rgba(0,0,0,0.35)';
-    backdrop.style.display = 'flex';
-    backdrop.style.alignItems = 'center';
-    backdrop.style.justifyContent = 'center';
-
-    const box = document.createElement('div');
-    box.style.background = '#fff';
-    box.style.padding = '16px 20px';
-    box.style.borderRadius = '8px';
-    box.style.maxWidth = '420px';
-    box.style.width = '90%';
-    box.style.boxShadow = '0 8px 20px rgba(0,0,0,0.25)';
-    box.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    box.innerHTML = `
-      <h3 style="margin:0 0 8px 0;">Select a single Planning District</h3>
-      <p style="margin:0 0 8px 0;font-size:0.95em;">
-        <strong>Generate PZ Trips</strong> can only run when exactly one Planning District
-        is selected. Right now you have the following PDs checked:
-      </p>
-      <ul style="margin:0 0 12px 20px;padding:0;font-size:0.95em;">
-        ${names.map(n => `<li>${escapeHtml(n)}</li>`).join('')}
-      </ul>
-      <p style="margin:0 0 12px 0;font-size:0.95em;">
-        Please uncheck all but one Planning District and try again.
-      </p>
-      <div style="text-align:right;">
-        <button id="routing-pd-close">Close</button>
-      </div>
-    `;
-
-    backdrop.appendChild(box);
-    document.body.appendChild(backdrop);
-
-    const closeBtn = box.querySelector('#routing-pd-close');
-    if (closeBtn) closeBtn.addEventListener('click', () => backdrop.remove());
-    backdrop.addEventListener('click', (e) => {
-      if (e.target === backdrop) backdrop.remove();
-    });
-  }
-
-  // ===== Button state =====
-  function setBusy(mode, busy) {
-    const btnPD    = byId('rt-gen-pd');
-    const btnPZ    = byId('rt-gen-pz');
-    const btnClear = byId('rt-clear');
-
-    if (mode === 'PD' && btnPD) {
-      btnPD.disabled  = busy;
-      btnPD.textContent = busy ? LABEL_PD_BUSY : LABEL_PD;
-    }
-    if (mode === 'PZ' && btnPZ) {
-      btnPZ.disabled  = busy;
-      btnPZ.textContent = busy ? LABEL_PZ_BUSY : LABEL_PZ;
-    }
-    if (btnClear) btnClear.disabled = busy;
-  }
-
-  // ===== PD trips =====
-  async function generateForPDs() {
-    try {
-      const origin  = getOriginLonLat();
-      const reverse = !!byId('rt-reverse')?.checked;
-
-      const requests = collectPDRequests();
-      if (!requests.length) {
-        alert('Select at least one Planning District.');
-        return;
-      }
-
-      setBusy('PD', true);
-      clearRoutes();
-      S.lastMode  = 'PD';
-      S.lastTrips = [];
-
-      for (const req of requests) {
-        const dest = sanitizeLonLat([req.lon, req.lat]);
-        const o = reverse ? dest : origin;
-        const d = reverse ? origin : dest;
-
-        await RateLimiter.beforeRequest();
-        const json  = await getRoutes(o, d, req.count);
-        const feats = Array.isArray(json.features) ? json.features.slice(0, req.count) : [];
-        if (!feats.length) continue;
-
-        // sort alternatives by duration then distance
-        feats.sort((a, b) => {
-          const pa = a.properties || {};
-          const pb = b.properties || {};
-          const sa = pa.summary || (pa.segments && pa.segments[0]) || {};
-          const sb = pb.summary || (pb.segments && pb.segments[0]) || {};
-          const da = num(sa.duration);
-          const db = num(sb.duration);
-          if (Number.isFinite(da) && Number.isFinite(db) && da !== db) return da - db;
-          const la = num(sa.distance);
-          const lb = num(sb.distance);
-          if (Number.isFinite(la) && Number.isFinite(lb) && la !== lb) return la - lb;
-          return 0;
-        });
-
-        feats.forEach((feat, idx) => {
-          const coords = feat.geometry?.coordinates || [];
-          drawRoute(coords, idx === 0 ? COLOR_FIRST : COLOR_OTHERS);
-        });
-
-        const defaultOriginLabel =
-          (global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin';
-        const originLabel = reverse ? req.name : defaultOriginLabel;
-        const destLabel   = reverse ? defaultOriginLabel : req.name;
-
-        S.lastTrips.push({
-          type: 'PD',
-          key : req.key,
-          name: req.name,
-          reverse,
-          origin: { lon: o[0], lat: o[1], label: originLabel },
-          destination: { lon: d[0], lat: d[1], label: destLabel },
-          features: feats.map(f => ({ geometry: f.geometry, properties: f.properties }))
-        });
-      }
-
-      global.ROUTING_CACHE = {
-        mode: 'PD',
-        reverse,
-        trips: S.lastTrips
-      };
-    } catch (e) {
-      console.error(e);
-      if (e.type === 'validation') {
-        showValidationPopup(e.invalid);
-      } else if (e.code === 'NO_ORIGIN') {
-        alert('Please pick an origin using the address search bar before generating trips.');
-      } else {
-        alert('Routing error: ' + (e.message || e));
-      }
-    } finally {
-      setBusy('PD', false);
-      hideRateWaitOverlay();
-    }
-  }
-
-  // ===== PZ trips =====
-  // 1) If a zone is selected → route to that zone.
-  // 2) Else, if exactly one PD is checked → route to ALL zones in that PD.
-  async function generateForPZs() {
-    try {
-      const origin  = getOriginLonLat();
-      const reverse = !!byId('rt-reverse')?.checked;
-
-      let targets = [];
-      let explicitZoneTargets = [];
-
-      // try selected zone first
-      try {
-        explicitZoneTargets = collectZoneTargets();
-      } catch (e) {
-        if (e.type === 'noZonesHelper') explicitZoneTargets = [];
-        else throw e;
-      }
-
-      if (explicitZoneTargets.length) {
-        targets = explicitZoneTargets;
-      } else {
-        // fallback: 1 PD → all its zones
-        const boxes = Array.from(document.querySelectorAll('.pd-cbx:checked'));
-        const pdKeys = boxes
-          .map(b => decodeURIComponent(b.dataset.key || b.closest('.pd-item')?.dataset.key || ''))
-          .filter(Boolean);
-
-        if (!pdKeys.length) {
-          alert('To generate PZ trips, either select a Planning Zone or check exactly one Planning District.');
-          return;
-        }
-        if (pdKeys.length > 1) {
-          showSinglePDPopup(pdKeys);
-          return;
-        }
-
-        const pdKey = pdKeys[0];
-        if (typeof global.getZoneTargetsForPD !== 'function') {
-          alert('PZ trip generation by PD requires script.js to define window.getZoneTargetsForPD(pdKey).');
-          return;
-        }
-
-        const pdTargets = global.getZoneTargetsForPD(pdKey) || [];
-        if (!pdTargets.length) {
-          alert('No Planning Zones found for the selected Planning District.');
-          return;
-        }
-
-        targets = pdTargets.map(t => ({
-          lon: t.lon,
-          lat: t.lat,
-          label: t.label
-        }));
-      }
-
-      if (!targets.length) {
-        alert('No Planning Zones available to route to.');
-        return;
-      }
-
-      setBusy('PZ', true);
-      clearRoutes();
-      S.lastMode  = 'PZ';
-      S.lastTrips = [];
-
-      for (const t of targets) {
-        const dest = sanitizeLonLat([t.lon, t.lat]);
-        const o = reverse ? dest : origin;
-        const d = reverse ? origin : dest;
-
-        await RateLimiter.beforeRequest();
-        const json = await getRoutes(o, d, 1);
-        const feat = Array.isArray(json.features) ? json.features[0] : null;
-        if (!feat) continue;
-
-        const coords = feat.geometry?.coordinates || [];
-        drawRoute(coords, COLOR_FIRST);
-
-        const defaultOriginLabel =
-          (global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin';
-        const originLabel = reverse ? (t.label || 'Zone') : defaultOriginLabel;
-        const destLabel   = reverse ? defaultOriginLabel : (t.label || 'Zone');
-
-        S.lastTrips.push({
-          type: 'PZ',
-          label: t.label || 'Zone',
-          reverse,
-          origin: { lon: o[0], lat: o[1], label: originLabel },
-          destination: { lon: d[0], lat: d[1], label: destLabel },
-          features: [ { geometry: feat.geometry, properties: feat.properties } ]
-        });
-      }
-
-      global.ROUTING_CACHE = {
-        mode: 'PZ',
-        reverse,
-        trips: S.lastTrips
-      };
-    } catch (e) {
-      console.error(e);
-      if (e.code === 'NO_ORIGIN') {
-        alert('Please pick an origin using the address search bar before generating trips.');
-      } else {
-        alert('Routing error: ' + (e.message || e));
-      }
-    } finally {
-      setBusy('PZ', false);
-      hideRateWaitOverlay();
-    }
-  }
-
-  // ===== Wire buttons & key UI =====
-  function wireControls() {
-    const btnPD      = byId('rt-gen-pd');
-    const btnPZ      = byId('rt-gen-pz');
-    const btnClear   = byId('rt-clear');
-    const btnSaveKey = byId('rt-save');
-    const btnUseUrl  = byId('rt-url');
-    const inpKeys    = byId('rt-keys');
-
-    if (btnPD)    btnPD.onclick    = () => generateForPDs();
-    if (btnPZ)    btnPZ.onclick    = () => generateForPZs();
-    if (btnClear) btnClear.onclick = () => clearRoutes();
-
-    if (btnSaveKey && inpKeys) {
-      btnSaveKey.onclick = () => {
-        const arr = inpKeys.value.split(',').map(x => x.trim()).filter(Boolean);
-        localStorage.setItem(LS_KEYS, JSON.stringify(arr));
-        hydrateKeys();
-        alert(`Saved ${S.keys.length} key(s).`);
-      };
+    const w = window.open('', '_blank');
+    if (!w) {
+      alert('Popup blocked. Please allow popups for this site to print the report.');
+      return;
     }
 
-    if (btnUseUrl) {
-      btnUseUrl.onclick = () => {
-        const k = qParam('orsKey');
-        if (!k) alert('Add ?orsKey=YOUR_KEY to the URL query.');
-        else {
-          localStorage.setItem(LS_KEYS, JSON.stringify([k]));
-          hydrateKeys();
-          alert('Using orsKey from URL.');
-        }
-      };
-    }
+    const html =
+      '<!doctype html><html><head><meta charset="utf-8">' +
+      '<title>' + escapeHtml(title) + '</title>' +
+      css +
+      '</head><body>' +
+      '<h1>' + escapeHtml(title) + '</h1>' +
+      '<div class="toolbar">' +
+        '<button id="btn-toggle-km">Hide km</button>' +
+        '<button id="btn-copy-csv">Copy to spreadsheet</button>' +
+        '<button id="btn-print">Print page</button>' +
+      '</div>' +
+      cardsHtml +
+      '<script>' +
+      '(function(){' +
+        'var doc=document;' +
+        'var toggleBtn=doc.getElementById("btn-toggle-km");' +
+        'var copyBtn=doc.getElementById("btn-copy-csv");' +
+        'var printBtn=doc.getElementById("btn-print");' +
+        'var kmEnabled=true;' +
+
+        'function setToggleLabel(){toggleBtn.textContent=kmEnabled?"Hide km":"Show km";}' +
+
+        'if(toggleBtn){toggleBtn.addEventListener("click",function(){' +
+          'kmEnabled=!kmEnabled;' +
+          'if(kmEnabled){doc.body.classList.remove("km-disabled");}else{doc.body.classList.add("km-disabled");}' +
+          'setToggleLabel();' +
+        '});}' +
+
+        'if(printBtn){printBtn.addEventListener("click",function(){window.print();});}' +
+
+        'function fallbackCopy(text){' +
+          'var ta=doc.createElement("textarea");' +
+          'ta.value=text;ta.style.position="fixed";ta.style.left="-9999px";' +
+          'doc.body.appendChild(ta);ta.focus();ta.select();' +
+          'try{doc.execCommand("copy");}catch(e){}' +
+          'doc.body.removeChild(ta);' +
+          'alert("Copied trip routes. Paste directly into Excel or Sheets.");' +
+        '}' +
+
+        'if(copyBtn){copyBtn.addEventListener("click",function(){' +
+          'var rows=[];' +
+          'var cards=doc.querySelectorAll(".card");' +
+          'cards.forEach(function(card){' +
+            'var areaNum=card.getAttribute("data-area-num")||"";' +
+            'var cityBare=card.getAttribute("data-area-city")||"";' +
+            'var trs=card.querySelectorAll("tbody tr");' +
+            'trs.forEach(function(tr){' +
+              'var tds=tr.querySelectorAll("td");' +
+              'if(tds.length<4)return;' +
+              'var tripDir=tds[0].innerText.trim();' +
+              'var descCell=tds[1];' +
+              'var desc=descCell.getAttribute("data-desc")||descCell.innerText.trim();' +
+              'var totalKm=tds[2].innerText.trim();' +
+              'var totalMin=tds[3].innerText.trim();' +
+              'rows.push([areaNum,cityBare,tripDir,desc,totalKm,totalMin]);' +
+            '});' +
+          '});' +
+          'if(!rows.length){alert("No trip rows to copy.");return;}' +
+          'var header=["Area","City","Trip dir","Street-by-street","Total km","Total min"];' +
+          'var lines=[header].concat(rows).map(function(r){' +
+            'return r.map(function(v){return String(v==null?"":v);}).join("\\t");' +  // TAB-separated
+          '});' +
+          'var text=lines.join("\\n");' +
+          'if(navigator.clipboard&&navigator.clipboard.writeText){' +
+            'navigator.clipboard.writeText(text).then(function(){' +
+              'alert("Copied trip routes. Paste directly into Excel or Sheets.");' +
+            '},function(){fallbackCopy(text);});' +
+          '}else{fallbackCopy(text);}' +
+        '});}' +
+
+        'if(toggleBtn){setToggleLabel();}' +
+      '})();' +
+      '<\/script>' +
+      '</body></html>';
+
+    w.document.write(html);
+    w.document.close();
   }
 
-  // ===== Trip Generator Leaflet control =====
-  const GeneratorControl = L.Control.extend({
+  /******************************************************************
+   * Leaflet control wiring
+   ******************************************************************/
+  const ReportControl = L.Control.extend({
     options: { position: 'topleft' },
     onAdd: function () {
-      const el = L.DomUtil.create('div', 'routing-control');
-      el.innerHTML = `
-        <div class="routing-header"><strong>Distribute Trips</strong></div>
-        <div class="routing-actions" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
-          <button id="rt-gen-pd">PD Trips</button>
-          <button id="rt-gen-pz">Zone Trips</button>
-          <button id="rt-clear" class="ghost">Clear</button>
+      const div = L.DomUtil.create('div', 'report-control');
+      div.innerHTML = `
+        <div class="routing-header"><strong>Report</strong></div>
+        <div class="routing-row">
+          <button type="button" id="rt-print-report">Print Report</button>
         </div>
-        <div style="margin-bottom:8px;">
-          <label style="font-size:0.9em;display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input type="checkbox" id="rt-reverse">
-            Reverse direction (PD/PZ → origin)
-          </label>
-        </div>
-        <details>
-          <summary><strong>Keys</strong></summary>
-          <div class="routing-card">
-            <label for="rt-keys" style="font-weight:600;">OpenRouteService key(s)</label>
-            <input id="rt-keys" type="text" placeholder="KEY1,KEY2 (comma-separated)">
-            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px;">
-              <button id="rt-save">Save Keys</button>
-              <button id="rt-url" class="ghost">Use ?orsKey</button>
-            </div>
-            <small class="routing-hint">
-              Priority: ?orsKey → saved → inline fallback. Keys auto-rotate on 401/429.
-            </small>
-          </div>
-        </details>
       `;
-      const geocoderEl = document.querySelector('.leaflet-control-geocoder');
-      if (geocoderEl) el.style.width = geocoderEl.offsetWidth + 'px';
-      L.DomEvent.disableClickPropagation(el);
-      return el;
+      const btn = div.querySelector('#rt-print-report');
+      if (btn) {
+        btn.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          printReport();
+        });
+      }
+      L.DomEvent.disableClickPropagation(div);
+      return div;
     }
   });
 
-  async function innerInit(map) {
-    S.map = map;
-    hydrateKeys();
-    S.group = L.layerGroup().addTo(map);
-    map.addControl(new GeneratorControl());
-    setTimeout(wireControls, 0);
+  function initWhenReady() {
+    if (global.map && (global.map._loaded || global.map._size)) {
+      try {
+        global.map.addControl(new ReportControl());
+      } catch (e) {
+        console.error('Failed to add Report control:', e);
+      }
+    } else {
+      setTimeout(initWhenReady, 80);
+    }
   }
 
-  const Routing = {
-    init(map) {
-      if (!map || !map._loaded) {
-        const retry = () =>
-          (map && map._loaded) ? innerInit(map) : setTimeout(retry, 80);
-        return retry();
-      }
-      innerInit(map);
-    }
-  };
+  global.Report = { print: printReport };
 
-  global.Routing = Routing;
-
-  document.addEventListener('DOMContentLoaded', () => {
-    const tryInit = () => {
-      if (global.map && (global.map._loaded || global.map._size)) Routing.init(global.map);
-      else setTimeout(tryInit, 80);
-    };
-    tryInit();
+  document.addEventListener('DOMContentLoaded', function () {
+    initWhenReady();
   });
+
 })(window);
