@@ -557,12 +557,95 @@
 
   // ===== Helpers to get PD / Zone targets from script.js =====
 
+  
+  // Fallback-aware PD target collector.
+  // Uses the legacy PD checkbox + route-count UI (PD_REGISTRY) if no
+  // PDSelection helper is present.
   function collectPDTargets() {
-    if (!global.PDSelection || !global.PDSelection.getSelectedTargets) return [];
-    return global.PDSelection.getSelectedTargets();
+    // Future helper (not used in current app, but kept for flexibility)
+    if (global.PDSelection && typeof global.PDSelection.getSelectedTargets === 'function') {
+      try {
+        const arr = global.PDSelection.getSelectedTargets() || [];
+        if (Array.isArray(arr) && arr.length) return arr;
+      } catch (e) {
+        console.warn('PDSelection.getSelectedTargets failed, falling back to DOM-based PD collection:', e);
+      }
+    }
+
+    const registry = global.PD_REGISTRY || {};
+    const items    = Array.from(document.querySelectorAll('.pd-item'));
+    const invalid  = [];
+    const targets  = [];
+
+    // 1) Validate all route-count fields
+    for (const item of items) {
+      const cbx   = item.querySelector('.pd-cbx');
+      const input = item.querySelector('.pd-route-count');
+      const keyEnc = cbx?.dataset.key || item.dataset.key || '';
+      const key    = decodeURIComponent(keyEnc || '');
+      const reg    = registry[key];
+      const name   = reg?.name || key || 'Unknown PD';
+
+      if (!input) continue;
+
+      let raw = input.value.trim();
+      // If blank, treat as 1 if the PD is checked, otherwise 0,
+      // and write the inferred value back into the box so the user sees it.
+      if (raw === '') {
+        raw = cbx && cbx.checked ? '1' : '0';
+        input.value = raw;
+      }
+      const n = Number(raw);
+      if (!Number.isFinite(n) || Math.floor(n) !== n || n < 0 || n > 3) {
+        invalid.push({ key, name, value: raw });
+      }
+    }
+
+    if (invalid.length) {
+      const msg = invalid
+        .map(x => `${x.name}: "${x.value}" (must be an integer 0–3)`)
+        .join('\n');
+      alert('Each Planning District route-count must be an integer from 0–3.\n\nProblem values:\n' + msg);
+      return [];
+    }
+
+    // 2) Build targets for each *checked* PD
+    for (const item of items) {
+      const cbx = item.querySelector('.pd-cbx');
+      if (!cbx || !cbx.checked) continue;
+
+      const keyEnc = cbx.dataset.key || item.dataset.key || '';
+      const key    = decodeURIComponent(keyEnc || '');
+      const reg    = registry[key];
+      if (!reg || !reg.layer || typeof reg.layer.getBounds !== 'function') continue;
+
+      const center = reg.layer.getBounds().getCenter();
+      const name   = reg.name || key || 'PD';
+
+      let count = 1;
+      const input = item.querySelector('.pd-route-count');
+      if (input) {
+        const raw = input.value.trim() || '1';
+        const n   = Number(raw);
+        if (Number.isFinite(n) && n > 0) {
+          count = Math.min(3, Math.max(1, Math.floor(n)));
+        }
+      }
+
+      targets.push({
+        key,
+        label  : name,
+        layer  : reg.layer,
+        feature: reg.layer && reg.layer.feature ? reg.layer.feature : null,
+        routes : count,
+        destLonLat: [center.lng, center.lat]
+      });
+    }
+
+    return targets;
   }
 
-  function collectZoneTargets() {
+function collectZoneTargets() {
     if (!global.ZoneSelection || !global.ZoneSelection.getSelectedTargets) return [];
     return global.ZoneSelection.getSelectedTargets();
   }
