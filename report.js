@@ -1,10 +1,31 @@
 (function (global) {
+  'use strict';
 
-  /**************************************************************
-   * Report.js
-   * - Builds a new-tab report using window.ROUTING_CACHE only
-   * - Street-by-street extraction and merging logic
-   **************************************************************/
+  /******************************************************************
+   * Basic helpers
+   ******************************************************************/
+  function toRad(d) { return d * Math.PI / 180; }
+
+  function isFiniteNum(n) {
+    return Number.isFinite(n) && !Number.isNaN(n);
+  }
+
+  function haversineMeters(a, b) {
+    if (!a || !b || a.length < 2 || b.length < 2) return 0;
+    const R = 6371000; // m
+    const lon1 = toRad(a[0]), lat1 = toRad(a[1]);
+    const lon2 = toRad(b[0]), lat2 = toRad(b[1]);
+    const dLat = lat2 - lat1;
+    const dLon = lon2 - lon1;
+    const sa = Math.sin(dLat / 2) ** 2 +
+               Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(sa), Math.sqrt(1 - sa));
+    return R * c;
+  }
+
+  function km2(v) {
+    return (v || 0).toFixed(2);
+  }
 
   function escapeHtml(str) {
     return String(str == null ? '' : str)
@@ -19,458 +40,775 @@
     return String(str || '').replace(/<[^>]*>/g, '').trim();
   }
 
-  function fmtKm(km) {
-    const n = Number(km);
-    if (!Number.isFinite(n)) return '';
-    return n.toFixed(2);
+  function normalizeName(raw) {
+    if (!raw) return '';
+    const s = String(raw).trim().replace(/\s+/g, ' ');
+    if (!s || /^unnamed\b/i.test(s) || /^[-–]+$/.test(s)) return '';
+    return s;
   }
 
-  function fmtMin(min) {
-    const n = Number(min);
-    if (!Number.isFinite(n)) return '';
-    return Math.round(n).toString();
+  // Strip trailing ", number" (e.g., "Jane Street, 55" → "Jane Street")
+  function stripTrailingCommaNumber(name) {
+    if (!name) return name;
+    const m = String(name).match(/^(.+?),\s*\d+\s*$/);
+    if (m) return m[1].trim();
+    return name;
   }
 
-  // --- Direction helpers ---
-  function bearingDeg(a, b) {
-    const toRad = (x) => x * Math.PI / 180;
-    const toDeg = (x) => x * 180 / Math.PI;
-
-    const lat1 = toRad(a[1]);
-    const lat2 = toRad(b[1]);
-    const dLng = toRad(b[0] - a[0]);
-
-    const y = Math.sin(dLng) * Math.cos(lat2);
-    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
-    const brng = Math.atan2(y, x);
-    return (toDeg(brng) + 360) % 360;
+  function finalNameCleanup(name) {
+    if (!name) return name;
+    let n = stripTrailingCommaNumber(name);
+    n = n.replace(/\s+/g, ' ').trim();
+    return n;
   }
 
-  function dirFromBearing(brng) {
-    // 0=N, 90=E, 180=S, 270=W
-    if (brng >= 315 || brng < 45) return 'NB';
-    if (brng >= 45 && brng < 135) return 'EB';
-    if (brng >= 135 && brng < 225) return 'SB';
-    return 'WB';
-  }
+  /******************************************************************
+   * Highway centreline support
+   ******************************************************************/
+  let HIGHWAYS = null;
+  let HIGHWAYS_PROMISE = null;
 
-  function distanceMeters(a, b) {
-    const R = 6371000;
-    const toRad = (x) => x * Math.PI / 180;
-    const lat1 = toRad(a[1]), lat2 = toRad(b[1]);
-    const dLat = toRad(b[1] - a[1]);
-    const dLng = toRad(b[0] - a[0]);
-
-    const s1 = Math.sin(dLat / 2);
-    const s2 = Math.sin(dLng / 2);
-    const h = s1 * s1 + Math.cos(lat1) * Math.cos(lat2) * s2 * s2;
-    return 2 * R * Math.asin(Math.sqrt(h));
-  }
-
-  function measurePolylineMeters(coords) {
-    let m = 0;
-    for (let i = 1; i < coords.length; i++) {
-      m += distanceMeters(coords[i - 1], coords[i]);
-    }
-    return m;
-  }
-
-  function pointAtDistance(coords, distMeters) {
-    // returns index+fraction interpolation point at approx cumulative distance along polyline
-    let acc = 0;
-    for (let i = 1; i < coords.length; i++) {
-      const seg = distanceMeters(coords[i - 1], coords[i]);
-      if (acc + seg >= distMeters) {
-        const t = (distMeters - acc) / Math.max(1e-9, seg);
-        const x = coords[i - 1][0] + (coords[i][0] - coords[i - 1][0]) * t;
-        const y = coords[i - 1][1] + (coords[i][1] - coords[i - 1][1]) * t;
-        return [x, y];
-      }
-      acc += seg;
-    }
-    return coords[coords.length - 1];
-  }
-
-  function averageBearingOverWindow(coords, startM, endM, samples) {
-    const s = Math.max(0, startM);
-    const e = Math.max(s, endM);
-    const n = Math.max(2, samples || 3);
-
-    let sumX = 0;
-    let sumY = 0;
-
-    for (let i = 0; i < n; i++) {
-      const t1 = s + (e - s) * (i / n);
-      const t2 = s + (e - s) * ((i + 1) / n);
-      const p1 = pointAtDistance(coords, t1);
-      const p2 = pointAtDistance(coords, t2);
-      const br = bearingDeg(p1, p2);
-      const rad = br * Math.PI / 180;
-      sumX += Math.cos(rad);
-      sumY += Math.sin(rad);
-    }
-
-    const avg = Math.atan2(sumY, sumX) * 180 / Math.PI;
-    return (avg + 360) % 360;
-  }
-
-  // --- Street name cleanup ---
-  function cleanStreetName(name) {
-    let s = String(name || '').trim();
-    if (!s) return '';
-    // remove "Route" prefix if present
-    s = s.replace(/^Route:\s*/i, '');
-
-    // drop trailing ", 55" style for streets (but keep HIGHWAY numbers)
-    if (!/HIGHWAY\s+\d+/i.test(s)) {
-      s = s.replace(/,\s*\d+\s*$/g, '');
-    }
-    return s.trim();
-  }
-
-  // --- Highway naming via centerlines dataset ---
-  let highwayData = null;
-  async function loadHighwayDataOnce() {
-    if (highwayData) return highwayData;
-    try {
-      const res = await fetch('data/highway_centrelines.json');
-      highwayData = await res.json();
-      return highwayData;
-    } catch (e) {
-      console.warn('Could not load highway_centrelines.json', e);
-      highwayData = null;
-      return null;
-    }
-  }
-
-  function closestHighwayName(ptLngLat, data) {
-    if (!data || !data.features || !data.features.length) return '';
-    let best = null;
-    let bestD = Infinity;
-
-    for (const f of data.features) {
-      const name = f && f.properties && (f.properties.Name || f.properties.name);
-      const geom = f && f.geometry;
-      if (!name || !geom) continue;
-
-      const coords = geom.coordinates;
-      if (!coords) continue;
-
-      // handle LineString and MultiLineString
-      const lines = (geom.type === 'MultiLineString') ? coords : [coords];
-
-      for (const line of lines) {
-        for (let i = 0; i < line.length; i++) {
-          const p = line[i];
-          const d = distanceMeters(ptLngLat, p);
-          if (d < bestD) {
-            bestD = d;
-            best = name;
+  async function ensureHighwaysLoaded() {
+    if (HIGHWAYS !== null) return;
+    if (!HIGHWAYS_PROMISE) {
+      const candidates = [
+        'data/highway_centrelines.json',
+        'data/highway_centerlines.json',
+        'data/highway_centreline.json'
+      ];
+      HIGHWAYS_PROMISE = (async () => {
+        for (const path of candidates) {
+          try {
+            const res = await fetch(path);
+            if (!res.ok) continue;
+            const json = await res.json();
+            HIGHWAYS = Array.isArray(json.features) ? json.features : [];
+            return;
+          } catch (e) {
+            // try next
           }
+        }
+        HIGHWAYS = [];
+      })();
+    }
+    await HIGHWAYS_PROMISE;
+  }
+
+  function nearestHighwayName(lon, lat) {
+    if (!HIGHWAYS || !HIGHWAYS.length) return '';
+
+    let bestName = '';
+    let bestD2 = Infinity;
+
+    for (const f of HIGHWAYS) {
+      if (!f || !f.geometry || !Array.isArray(f.geometry.coordinates)) continue;
+      const coords = f.geometry.coordinates;
+      const props = f.properties || {};
+      const candName = normalizeName(props.Name || props.name);
+      if (!candName) continue;
+
+      for (const c of coords) {
+        if (!Array.isArray(c) || c.length < 2) continue;
+        const dx = c[0] - lon;
+        const dy = c[1] - lat;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestName = candName;
         }
       }
     }
-    // only accept within ~120m
-    if (bestD <= 120) return String(best).trim();
+
+    const MAX_DEG2 = 0.005 * 0.005; // ~500m
+    if (bestName && bestD2 <= MAX_DEG2) return bestName;
     return '';
   }
 
-  // --- Extract street-by-street from ORS GeoJSON ---
-  async function extractStreetMoves(routeFeatureCollection) {
-    const hw = await loadHighwayDataOnce();
+  /******************************************************************
+   * Direction + street-name helpers
+   ******************************************************************/
+  function axisCardinal(a, b) {
+    if (!a || !b || a.length < 2 || b.length < 2) return '';
+    const dLon = b[0] - a[0];
+    const dLat = b[1] - a[1];
+    if (Math.abs(dLon) < 1e-8 && Math.abs(dLat) < 1e-8) return '';
+    if (Math.abs(dLat) >= Math.abs(dLon)) {
+      return dLat >= 0 ? 'NB' : 'SB';
+    }
+    return dLon >= 0 ? 'EB' : 'WB';
+  }
 
-    // ORS route is stored as FeatureCollection with one Feature
-    const feature = routeFeatureCollection && routeFeatureCollection.features && routeFeatureCollection.features[0];
-    const props = feature && feature.properties;
-    const segments = props && props.segments;
+  // 3-tier rule:
+  //  < 20 m      → simple start→end
+  //  20–200 m    → window 20–50 m
+  //  ≥ 200 m     → window 200–500 m
+  function directionFromSegment(segCoords) {
+    if (!segCoords || segCoords.length < 2) return '';
 
-    const geom = feature && feature.geometry;
-    const coords = geom && geom.coordinates;
+    const n = segCoords.length;
+    const lens = new Array(n - 1);
+    let total = 0;
+    for (let i = 1; i < n; i++) {
+      const d = haversineMeters(segCoords[i - 1], segCoords[i]);
+      lens[i - 1] = d;
+      total += d;
+    }
+    if (total < 1) return '';
 
-    if (!segments || !segments.length || !coords || coords.length < 2) {
-      return { moves: [], totalKm: 0, totalMin: 0 };
+    // Very tiny segments: just use start→end
+    if (total < 20) {
+      return axisCardinal(segCoords[0], segCoords[n - 1]);
     }
 
-    // total
-    const summary = props && props.summary;
-    const totalKm = summary && Number.isFinite(summary.distance) ? summary.distance : 0;
-    const totalMin = summary && Number.isFinite(summary.duration) ? summary.duration / 60 : 0;
+    let winStart, winEnd;
+    if (total < 200) {
+      // Short segments: 20–50 m window
+      winStart = 20;
+      winEnd   = Math.min(total, 50);
+    } else {
+      // Long segments: 200–500 m window
+      winStart = 200;
+      winEnd   = Math.min(total, 500);
+    }
 
-    const moves = [];
+    if (winStart >= winEnd) {
+      return axisCardinal(segCoords[0], segCoords[n - 1]);
+    }
 
-    // ORS step "way_points" indexes into geometry coords
-    segments.forEach(seg => {
-      (seg.steps || []).forEach(step => {
-        const stepNameRaw = (step.name || '').trim();
-        const wp = step.way_points || [];
-        const i0 = wp[0], i1 = wp[1];
+    let acc = 0;
+    let dxSum = 0;
+    let dySum = 0;
 
-        if (typeof i0 !== 'number' || typeof i1 !== 'number' || i1 <= i0) return;
+    for (let i = 1; i < n; i++) {
+      const d = lens[i - 1];
+      const mid = acc + d / 2;
+      if (mid >= winStart && mid <= winEnd) {
+        const a = segCoords[i - 1];
+        const b = segCoords[i];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        dxSum += dx * d;
+        dySum += dy * d;
+      }
+      acc += d;
+    }
 
-        const segCoords = coords.slice(i0, i1 + 1);
-        if (!segCoords || segCoords.length < 2) return;
+    // If we got no usable window, fall back
+    if (Math.abs(dxSum) < 1e-12 && Math.abs(dySum) < 1e-12) {
+      return axisCardinal(segCoords[0], segCoords[n - 1]);
+    }
 
-        let name = cleanStreetName(stepNameRaw);
+    if (Math.abs(dySum) >= Math.abs(dxSum)) {
+      return dySum >= 0 ? 'NB' : 'SB';
+    }
+    return dxSum >= 0 ? 'EB' : 'WB';
+  }
 
-        // If unnamed and looks like highway, try snap to centerlines
-        if (!name || name === '-' || /^Unnamed/i.test(name)) {
-          const mid = pointAtDistance(segCoords, measurePolylineMeters(segCoords) / 2);
-          const hwName = closestHighwayName(mid, hw);
-          if (hwName) name = hwName;
-        }
+  const GENERIC_INSTR_RE =
+    /^(keep (left|right)|slight (left|right)|turn (left|right)|continue\b|take (the )?ramp\b|enter (the )?roundabout\b)$/i;
 
-        // distance for this step (km)
-        const stepKm = Number.isFinite(step.distance) ? (step.distance / 1000) : (measurePolylineMeters(segCoords) / 1000);
+  function stepNameNatural(step) {
+    if (!step) return '';
+    let name = normalizeName(step.name || step.road);
+    if (name && GENERIC_INSTR_RE.test(name)) return '';
 
-        // direction per step:
-        const lenM = measurePolylineMeters(segCoords);
-
-        // window rule: long segments sample 200m-500m, short segments 20-50m
-        let startM = 200, endM = 500, samples = 4;
-
-        if (lenM < 200) {
-          startM = Math.min(20, lenM * 0.2);
-          endM   = Math.min(50, lenM * 0.6);
-          samples = 3;
-        } else if (lenM < 600) {
-          startM = 100;
-          endM   = Math.min(300, lenM * 0.7);
-          samples = 4;
-        }
-
-        const avgBr = averageBearingOverWindow(segCoords, startM, endM, samples);
-        const dir = dirFromBearing(avgBr);
-
-        moves.push({ dir, name: name || 'Unnamed', km: stepKm });
-      });
-    });
-
-    // merge consecutive duplicates
-    const merged = [];
-    for (const m of moves) {
-      const prev = merged[merged.length - 1];
-
-      // normalize for highways: direction-insensitive merge for HIGHWAY & Gardiner patterns
-      const isHighway = /HIGHWAY\s+\d+/i.test(m.name) || /GARDINER/i.test(m.name) || /EXPRESSWAY/i.test(m.name);
-
-      const sameName = prev && (prev.name === m.name);
-      const sameDir  = prev && (prev.dir === m.dir);
-
-      if (prev && sameName && (sameDir || isHighway)) {
-        prev.km += m.km;
-      } else {
-        merged.push({ ...m });
+    if (!name) {
+      const instr = cleanHtml(step.instruction || '');
+      if (instr) {
+        let m = instr.match(/\bonto\s+([^,]+?)(?:\s+for\b|,|$)/i);
+        if (!m) m = instr.match(/\bvia\s+([^,]+?)(?:\s+for\b|,|$)/i);
+        if (!m) m = instr.match(/\bonto\s+(.+)$/i);
+        if (!m) m = instr.match(/\bvia\s+(.+)$/i);
+        const cand = m ? m[1] : instr;
+        name = normalizeName(cand);
+        if (name && GENERIC_INSTR_RE.test(name)) return '';
       }
     }
 
-    return { moves: merged, totalKm, totalMin };
-  }
-
-  // --- Build report HTML ---
-  function buildReportHtml(cache) {
-    const kindLabel = cache.kind === 'pd' ? 'Planning Districts' : 'Traffic Zones';
-
-    const originLabel = cleanHtml(cache.origin && cache.origin.label ? cache.origin.label : '');
-    const title = `Trip Route Distribution for ${escapeHtml(originLabel)} to ${kindLabel}`;
-
-    const reverse = !!cache.reverse;
-
-    // Build tables
-    const rowsHtml = cache.items.map(item => {
-      const key = item.key;
-      const name = item.name || key;
-      const muni = item.muni || '';
-      const destLabel =
-        cache.kind === 'pd'
-          ? `PD ${escapeHtml(key)}${muni ? `, ${escapeHtml(muni)}` : ''}`
-          : `Zone ${escapeHtml(key)}${muni ? `, ${escapeHtml(muni)}` : ''}`;
-
-      const fromLine = reverse ? `From: ${escapeHtml(destLabel)}` : `From: ${escapeHtml(originLabel)}`;
-      const toLine   = reverse ? `To: ${escapeHtml(originLabel)}`   : `To: ${escapeHtml(destLabel)}`;
-
-      // Use first route as the "primary" (alt index 0)
-      const primary = (item.routes || []).find(r => r.alternativesIndex === 0) || (item.routes || [])[0];
-
-      return `
-        <section class="dest-block">
-          <h2>${escapeHtml(name)}</h2>
-          <div class="meta">${fromLine}<br>${toLine}</div>
-          <table class="report-table" data-key="${escapeHtml(key)}" data-muni="${escapeHtml(muni)}">
-            <thead>
-              <tr>
-                <th>Trip dir</th>
-                <th>Street-by-street</th>
-                <th>Total km</th>
-                <th>Total min</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="tripdir">${escapeHtml(item.tripDir || '')}</td>
-                <td class="streets" data-has-km="1">(building…)</td>
-                <td class="totalkm"></td>
-                <td class="totalmin"></td>
-              </tr>
-            </tbody>
-          </table>
-          <div class="alt-note">${(item.routes && item.routes.length > 1) ? `Includes ${item.routes.length} route alternatives (primary shown).` : ''}</div>
-          <script type="application/json" class="route-json">${escapeHtml(JSON.stringify(primary && primary.geojson ? primary.geojson : null))}</script>
-        </section>
-      `;
-    }).join('\n');
-
-    const html = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>${escapeHtml(title)}</title>
-  <style>
-    body { font-family: Arial, sans-serif; padding: 18px; }
-    h1 { font-size: 20px; margin: 0 0 10px 0; }
-    .topbar { display:flex; gap:10px; align-items:center; margin-bottom: 14px; }
-    button { padding: 8px 10px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
-    button:hover { background: #f7f7f7; }
-    .dest-block { margin: 18px 0 22px 0; padding-top: 8px; border-top: 1px solid #ddd; }
-    .dest-block h2 { font-size: 16px; margin: 0 0 6px 0; }
-    .meta { font-size: 12.5px; color:#333; margin-bottom: 8px; }
-    .report-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    .report-table th, .report-table td { border:1px solid #ddd; padding: 8px; vertical-align: top; font-size: 12.5px; }
-    .report-table th { background:#f5f5f5; }
-    .report-table td.tripdir { width: 60px; text-align:center; font-weight:700; }
-    .report-table td.totalkm, .report-table td.totalmin { width: 80px; text-align:right; font-variant-numeric: tabular-nums; }
-    .alt-note { font-size: 12px; opacity: 0.85; margin-top: 6px; }
-    .streets { word-wrap: break-word; }
-  </style>
-</head>
-<body>
-  <h1>${escapeHtml(title)}</h1>
-  <div class="topbar">
-    <button id="btn-toggle-km" type="button">Toggle segment km</button>
-    <button id="btn-copy" type="button">Copy to spreadsheet</button>
-    <button id="btn-print" type="button">Print</button>
-  </div>
-
-  ${rowsHtml}
-
-  <script>
-    const cacheKind = ${JSON.stringify(cache.kind)};
-    const showKmState = { enabled: true };
-
-    function formatMoves(moves, includeKm) {
-      return moves.map(m => {
-        const base = (m.dir ? m.dir + ' ' : '') + (m.name || 'Unnamed');
-        if (!includeKm) return base;
-        return base + ' (' + (Number(m.km).toFixed(2)) + ' km)';
-      }).join(', ');
+    if (name) {
+      name = finalNameCleanup(name);
     }
 
-    async function hydrateTables() {
-      const blocks = document.querySelectorAll('section.dest-block');
-      for (const blk of blocks) {
-        const tbl = blk.querySelector('table.report-table');
-        const jsonEl = blk.querySelector('script.route-json');
-        if (!tbl || !jsonEl) continue;
+    return name;
+  }
 
-        let geo = null;
-        try { geo = JSON.parse(jsonEl.textContent || 'null'); } catch(e) {}
+  // Normalize to a "highway group" name (for merging)
+  function highwayBase(nameUpper) {
+    let n = nameUpper;
+    if (/GARDINER/.test(n)) {
+      n = n
+        .replace(/\bEXPRESSWAY\b/g, '')
+        .replace(/\bEXPRESS\b/g, '')
+        .replace(/\bCOLLECTOR\b/g, '')
+        .replace(/\bF G\b/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return n || 'GARDINER';
+    }
+    if (/HIGHWAY\s+401\b/.test(n)) {
+      return 'HIGHWAY 401';
+    }
+    return null;
+  }
 
-        if (!geo) {
-          tbl.querySelector('.streets').textContent = '';
+  // Key for merging consecutive movements
+  // For highways (Gardiner + 401), ignore direction so they always merge
+  function mergeKey(m) {
+    const dir = m.dir || '';
+    let nameUpper = (m.name || '').toUpperCase().replace(/\s+/g, ' ').trim();
+    const hw = highwayBase(nameUpper);
+    if (hw) {
+      return 'HW|' + hw;   // highway group, direction-insensitive
+    }
+    return dir + '|' + nameUpper;
+  }
+
+  function mergeConsecutive(movs) {
+    const out = [];
+    for (const m of movs) {
+      if (!m || !m.name || !m.km || m.km <= 0) continue;
+      if (out.length) {
+        const last = out[out.length - 1];
+        if (mergeKey(last) === mergeKey(m)) {
+          last.km += m.km;
           continue;
         }
-
-        const payload = await window._extractStreetMoves(geo);
-        tbl.querySelector('.streets').textContent = formatMoves(payload.moves, showKmState.enabled);
-        tbl.querySelector('.totalkm').textContent = (Number(payload.totalKm).toFixed(2));
-        tbl.querySelector('.totalmin').textContent = (Math.round(payload.totalMin));
       }
+      out.push({ dir: m.dir, name: m.name, km: m.km });
     }
-
-    function buildClipboardTSV() {
-      const tables = document.querySelectorAll('table.report-table');
-      const lines = [];
-      lines.push(['Key','Municipality','Trip dir','Street-by-street','Total km','Total min'].join('\\t'));
-
-      tables.forEach(tbl => {
-        const key = tbl.getAttribute('data-key') || '';
-        const muni = tbl.getAttribute('data-muni') || '';
-        const tripdir = (tbl.querySelector('.tripdir')?.textContent || '').trim();
-        const streets = (tbl.querySelector('.streets')?.textContent || '').trim();
-        const km = (tbl.querySelector('.totalkm')?.textContent || '').trim();
-        const min = (tbl.querySelector('.totalmin')?.textContent || '').trim();
-        lines.push([key, muni, tripdir, streets, km, min].join('\\t'));
-      });
-
-      return lines.join('\\n');
-    }
-
-    document.getElementById('btn-toggle-km')?.addEventListener('click', () => {
-      showKmState.enabled = !showKmState.enabled;
-      hydrateTables();
-    });
-
-    document.getElementById('btn-copy')?.addEventListener('click', async () => {
-      const tsv = buildClipboardTSV();
-      try {
-        await navigator.clipboard.writeText(tsv);
-        alert('Copied table to clipboard.');
-      } catch(e) {
-        // fallback
-        const ta = document.createElement('textarea');
-        ta.value = tsv;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        ta.remove();
-        alert('Copied table to clipboard.');
-      }
-    });
-
-    document.getElementById('btn-print')?.addEventListener('click', () => window.print());
-  </script>
-</body>
-</html>
-    `;
-    return html;
+    return out;
   }
 
+  /******************************************************************
+   * ORS → movements
+   ******************************************************************/
+  function extractStepsFromFeature(feature) {
+    if (!feature || !feature.properties) return [];
+    const props = feature.properties;
+    if (Array.isArray(props.steps) && props.steps.length) return props.steps;
+    const segments = Array.isArray(props.segments) ? props.segments : [];
+    const out = [];
+    for (const seg of segments) {
+      if (seg && Array.isArray(seg.steps)) out.push(...seg.steps);
+    }
+    return out;
+  }
+
+  function buildMovementsFromDirections(coords, steps) {
+    if (!coords || !coords.length || !steps || !steps.length) return [];
+
+    const MIN_SEG_KM = 0.03; // < 30 m → ghost
+    const rows = [];
+
+    for (const step of steps) {
+      if (!step) continue;
+
+      const wp = step.way_points || step.wayPoints || [];
+      const len = coords.length;
+      const a = wp[0] ?? 0;
+      const b = wp[1] ?? (len - 1);
+      const startIdx = Math.max(0, Math.min(len - 1, a));
+      const endIdx   = Math.max(startIdx, Math.min(len - 1, b));
+      if (endIdx <= startIdx) continue;
+
+      let km = Number(step.distance); // ORS distance in km
+      if (!isFiniteNum(km) || km <= 0) {
+        let meters = 0;
+        for (let i = startIdx + 1; i <= endIdx; i++) {
+          meters += haversineMeters(coords[i - 1], coords[i]);
+        }
+        km = meters / 1000;
+      }
+      if (!isFiniteNum(km) || km < MIN_SEG_KM) continue;
+
+      const segCoords = coords.slice(startIdx, endIdx + 1);
+      const dir = directionFromSegment(segCoords) || '';
+
+      let name = stepNameNatural(step);
+
+      if (!name) {
+        const midIdx = Math.floor((startIdx + endIdx) / 2);
+        const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
+        if (mid && mid.length >= 2) {
+          const hName = nearestHighwayName(mid[0], mid[1]);
+          if (hName) name = finalNameCleanup(hName);
+        }
+      }
+
+      if (!name) {
+        const instr = cleanHtml(step.instruction || '');
+        name = finalNameCleanup(instr || 'Unnamed segment');
+      }
+
+      rows.push({ dir, name, km });
+    }
+
+    return mergeConsecutive(rows);
+  }
+
+  /******************************************************************
+   * Origin parsing for titles/meta
+   ******************************************************************/
+  function parseOriginLabel(label) {
+    if (!label) return { address: '', postal: '' };
+    const parts = label.split(',').map(p => p.trim()).filter(Boolean);
+    if (!parts.length) return { address: label.trim(), postal: '' };
+
+    // Detect postal code (Canadian style A1A 1A1)
+    const postalIdx = parts.findIndex(p => /[A-Z]\d[A-Z]\s*\d[A-Z]\d/i.test(p));
+    const postal = postalIdx >= 0 ? parts[postalIdx] : '';
+
+    const addrParts = postalIdx >= 0 ? parts.slice(0, postalIdx) : parts.slice();
+    if (!addrParts.length) return { address: label.trim(), postal };
+
+    // Find first part with a digit
+    let idx = addrParts.findIndex(p => /\d/.test(p));
+    if (idx < 0) idx = 0;
+
+    let addressMain = addrParts[idx];
+
+    // Special case: Highway <num> , <num> , <Street>
+    if (/Highway/i.test(addressMain) && idx + 2 < addrParts.length &&
+        /^\d+$/.test(addrParts[idx + 1])) {
+      addressMain = addressMain + ' ' + addrParts[idx + 1] + ' ' + addrParts[idx + 2];
+    } else if (/^\d+$/.test(addressMain) && idx + 1 < addrParts.length) {
+      // Pure number then street
+      addressMain = addressMain + ' ' + addrParts[idx + 1];
+    }
+
+    addressMain = addressMain.replace(/\s+/g, ' ').trim();
+    return { address: addressMain, postal: postal.replace(/\s+/g, ' ').trim() };
+  }
+
+  // Returns:
+  //   label: "PD 1" (no colon)
+  //   cityText: "City of Toronto"
+  //   num: "1"
+  //   cityBare: "Toronto"
+  function pdCityMetaFromTitle(title) {
+    if (!title) return { label: '', cityText: '', num: '', cityBare: '' };
+    const t = title.trim();
+    let pdNum = '';
+    let cityName = '';
+
+    const m = t.match(/^PD\s+(\d+)\s+of\s+(.+)$/i);
+    if (m) {
+      pdNum = m[1];
+      cityName = m[2].trim();
+    } else {
+      const mNum = t.match(/(\d+)/);
+      if (mNum) pdNum = mNum[1];
+      const mOf = t.match(/\bof\s+(.+)$/i);
+      cityName = (mOf ? mOf[1] : t).trim();
+    }
+
+    const cityBare = cityName.replace(/^(City|Town|Region|County)\s+of\s+/i, '').trim();
+    let cityText = cityName;
+    if (!/^(City|Town|Region|County)\s+of\s+/i.test(cityName)) {
+      cityText = 'City of ' + cityName;
+    }
+
+    const label = pdNum ? ('PD ' + pdNum) : 'PD';
+    return { label, cityText, num: pdNum, cityBare };
+  }
+
+  /******************************************************************
+   * Build summary table for one trip
+   ******************************************************************/
+  function buildTablesForTrip(trip) {
+    const features = Array.isArray(trip.features) ? trip.features : [];
+    if (!features.length) return '';
+
+    // Trip heading: based only on origin/destination lat/lon
+    let headingChar = '';
+    if (trip && trip.origin && trip.destination &&
+        isFiniteNum(trip.origin.lon) && isFiniteNum(trip.origin.lat) &&
+        isFiniteNum(trip.destination.lon) && isFiniteNum(trip.destination.lat)) {
+
+      let a = [trip.origin.lon, trip.origin.lat];
+      let b = [trip.destination.lon, trip.destination.lat];
+      if (trip.reverse) {
+        const tmp = a;
+        a = b;
+        b = tmp;
+      }
+      const h = axisCardinal(a, b);
+      headingChar = h ? h.charAt(0) : '';
+    }
+
+    const rows = [];
+
+    features.forEach((feat) => {
+      const coords = feat.geometry && Array.isArray(feat.geometry.coordinates)
+        ? feat.geometry.coordinates
+        : [];
+      if (!coords.length) return;
+
+      const steps = extractStepsFromFeature(feat);
+      const movs  = buildMovementsFromDirections(coords, steps);
+
+      const props   = feat.properties || {};
+      const summary = props.summary ||
+                      (Array.isArray(props.segments) && props.segments[0]) ||
+                      {};
+
+      let distKm = Number(summary.distance);
+      if (!isFiniteNum(distKm) || distKm <= 0) {
+        distKm = 0;
+        if (coords && coords.length > 1) {
+          for (let i = 1; i < coords.length; i++) {
+            distKm += haversineMeters(coords[i - 1], coords[i]) / 1000;
+          }
+        } else {
+          distKm = NaN;
+        }
+      }
+      const durMin = isFiniteNum(summary.duration)
+        ? Number(summary.duration) / 60
+        : NaN;
+
+      let descPlain;
+      let descHtml;
+
+      if (!movs.length) {
+        const base = '(No named street segments found for this route.)';
+        descPlain = base;
+        descHtml  = escapeHtml(base);
+      } else {
+        const piecesPlain = [];
+        const piecesHtml  = [];
+        for (const m of movs) {
+          const dirPart = m.dir ? (m.dir + ' ') : '';
+          const plain = `${dirPart}${m.name} (${km2(m.km)} km)`;
+          piecesPlain.push(plain);
+
+          const dirEsc  = m.dir ? (escapeHtml(m.dir) + ' ') : '';
+          const nameEsc = escapeHtml(m.name);
+          const kmEsc   = km2(m.km);
+          const htmlSeg = `${dirEsc}${nameEsc}<span class="seg-km"> (${kmEsc} km)</span>`;
+          piecesHtml.push(htmlSeg);
+        }
+        // IMPORTANT CHANGE: no "Route:" prefix here
+        descPlain = piecesPlain.join(', ');
+        descHtml  = piecesHtml.join(', ');
+      }
+
+      rows.push({
+        heading: headingChar,
+        descPlain,
+        descHtml,
+        distKm,
+        durMin
+      });
+    });
+
+    if (!rows.length) return '';
+
+    const bodyHtml = rows.map(r => `
+      <tr>
+        <td>${escapeHtml(r.heading || '')}</td>
+        <td data-desc="${escapeHtml(r.descPlain || '')}">${r.descHtml || ''}</td>
+        <td style="text-align:right">${isFiniteNum(r.distKm) ? km2(r.distKm) : ''}</td>
+        <td style="text-align:right">${isFiniteNum(r.durMin) ? r.durMin.toFixed(1) : ''}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <h3>Routes</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Trip dir</th>
+            <th>Street-by-street</th>
+            <th style="text-align:right">Total km</th>
+            <th style="text-align:right">Total min</th>
+          </tr>
+        </thead>
+        <tbody>${bodyHtml}</tbody>
+      </table>
+    `;
+  }
+
+  /******************************************************************
+   * Build cards for all trips
+   ******************************************************************/
+  function buildCardsHtml(cache) {
+    if (!cache || !Array.isArray(cache.trips) || !cache.trips.length) return '';
+
+    return cache.trips.map(trip => {
+      const isPD  = trip.type === 'PD';
+      const title = isPD
+        ? (trip.name || trip.key || 'Planning District')
+        : (trip.label || 'Planning Zone');
+
+      const originLabel = trip.origin && (trip.origin.label ||
+        `${trip.origin.lon}, ${trip.origin.lat}`) || '';
+
+      const { address: originAddr, postal: originPostal } =
+        parseOriginLabel(originLabel);
+
+      let areaLabel = '';
+      let cityText = '';
+      let areaNum = '';
+      let cityBare = '';
+
+      if (isPD) {
+        const meta = pdCityMetaFromTitle(title);
+        areaLabel = meta.label;       // "PD 1"
+        cityText  = meta.cityText;    // "City of Toronto"
+        areaNum   = meta.num || '';   // "1"
+        cityBare  = meta.cityBare;    // "Toronto"
+      } else {
+        const num = trip.key != null ? String(trip.key) :
+                    (trip.id != null ? String(trip.id) : '');
+        areaNum   = num;
+        areaLabel = num ? ('PZ ' + num) : 'PZ';
+
+        const cityNameRaw = trip.label || title;
+        cityBare = cityNameRaw.replace(/^(City|Town|Region|County)\s+of\s+/i, '').trim();
+        let displayName = cityNameRaw;
+        if (!/^(City|Town|Region|County)\s+of\s+/i.test(cityNameRaw)) {
+          displayName = 'City of ' + cityNameRaw;
+        }
+        cityText = displayName;
+      }
+
+      const fromLine = originAddr
+        ? `From: ${originAddr}${originPostal ? ', ' + originPostal : ''}`
+        : '';
+      const toLine = `To: ${areaLabel}${cityText ? ', ' + cityText : ''}`;
+
+      const tableHtml = buildTablesForTrip(trip);
+      if (!tableHtml) return '';
+
+      return `
+        <div class="card"
+             data-area-type="${isPD ? 'PD' : 'PZ'}"
+             data-area-num="${escapeHtml(areaNum)}"
+             data-area-city="${escapeHtml(cityBare)}">
+          <h2>${escapeHtml(title)}</h2>
+          ${fromLine ? `<p class="meta-line">${escapeHtml(fromLine)}</p>` : ''}
+          ${toLine ? `<p class="meta-line">${escapeHtml(toLine)}</p>` : ''}
+          ${tableHtml}
+        </div>
+      `;
+    }).join('');
+  }
+
+  /******************************************************************
+   * Print / open report
+   ******************************************************************/
   async function printReport() {
     const cache = global.ROUTING_CACHE;
-    if (!cache || !cache.items || !cache.items.length) {
-      alert('No generated trips found. Generate trips first.');
+    if (!cache || !cache.trips || !cache.trips.length) {
+      alert('No trips available. Please generate trips first.');
       return;
     }
 
-    const html = buildReportHtml(cache);
-    const win = window.open('', '_blank');
-    if (!win) {
-      alert('Popup blocked. Please allow popups for this site.');
+    await ensureHighwaysLoaded().catch(() => {});
+
+    const cardsHtml = buildCardsHtml(cache);
+    if (!cardsHtml) {
+      alert('Unable to build report. Trip data is missing or incomplete.');
       return;
     }
 
-    // expose extractor into the new window
-    win._extractStreetMoves = extractStreetMoves;
+    // Determine whether these are PD or PZ trips
+    let hasPD = false, hasPZ = false;
+    for (const t of cache.trips) {
+      if (t && t.type === 'PD') hasPD = true;
+      if (t && t.type === 'PZ') hasPZ = true;
+    }
+    let targetLabel;
+    if (hasPD && !hasPZ) targetLabel = 'Planning Districts';
+    else if (!hasPD && hasPZ) targetLabel = 'Traffic Zones';
+    else targetLabel = 'Planning Districts / Traffic Zones';
 
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
+    const originObj = global.ROUTING_ORIGIN || {};
+    const originLabel =
+      originObj.label || originObj.name || originObj.address ||
+      originObj.query || 'selected origin';
 
-    // hydrate after load
-    setTimeout(() => {
-      try { win.document.querySelector('script'); } catch(e) {}
-      try { win.eval('hydrateTables && hydrateTables()'); } catch(e) {}
-    }, 200);
+    const originParsed = parseOriginLabel(originLabel);
+    const originShort = originParsed.address || originLabel;
+
+    const title = `Trip Route Distribution for ${originShort} to ${targetLabel}`;
+
+    const css = `
+      <style>
+        * { box-sizing: border-box; }
+        body {
+          margin: 0;
+          padding: 16px 20px;
+          font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+                Roboto, Helvetica, Arial, sans-serif;
+          background: #fafafa;
+        }
+        h1 {
+          font-size: 20px;
+          margin: 0 0 10px 0;
+        }
+        h2 {
+          font-size: 16px;
+          margin: 14px 0 4px 0;
+        }
+        h3 {
+          font-size: 14px;
+          margin: 10px 0 4px 0;
+        }
+        p.meta-line {
+          margin: 0;
+          font-size: 12px;
+          color: #555;
+        }
+        p.meta-line + p.meta-line {
+          margin-top: 2px;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 8px;
+          margin-bottom: 16px;
+          background: #fff;
+        }
+        th, td {
+          border: 1px solid #ddd;
+          padding: 6px 8px;
+          font-size: 12px;
+          vertical-align: top;
+        }
+        thead th {
+          background: #f7f7f7;
+        }
+        .card {
+          page-break-inside: avoid;
+          margin-bottom: 22px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid #eee;
+          background: #fff;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+          padding: 10px 12px 12px 12px;
+        }
+        .toolbar {
+          margin: 0 0 14px 0;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .toolbar button {
+          font-size: 12px;
+          padding: 4px 10px;
+          border-radius: 12px;
+          border: 1px solid #ccc;
+          background: #fff;
+          cursor: pointer;
+        }
+        .toolbar button:hover {
+          background: #f0f0f0;
+        }
+        .seg-km {
+          white-space: nowrap;
+        }
+        body.km-disabled .seg-km {
+          display: none;
+        }
+      </style>
+    `;
+
+    const w = window.open('', '_blank');
+    if (!w) {
+      alert('Popup blocked. Please allow popups for this site to print the report.');
+      return;
+    }
+
+    const html =
+      '<!doctype html><html><head><meta charset="utf-8">' +
+      '<title>' + escapeHtml(title) + '</title>' +
+      css +
+      '</head><body>' +
+      '<h1>' + escapeHtml(title) + '</h1>' +
+      '<div class="toolbar">' +
+        '<button id="btn-toggle-km">Hide km</button>' +
+        '<button id="btn-copy-csv">Copy to spreadsheet</button>' +
+        '<button id="btn-print">Print page</button>' +
+      '</div>' +
+      cardsHtml +
+      '<script>' +
+      '(function(){' +
+        'var doc=document;' +
+        'var toggleBtn=doc.getElementById("btn-toggle-km");' +
+        'var copyBtn=doc.getElementById("btn-copy-csv");' +
+        'var printBtn=doc.getElementById("btn-print");' +
+        'var kmEnabled=true;' +
+
+        'function setToggleLabel(){toggleBtn.textContent=kmEnabled?"Hide km":"Show km";}' +
+
+        'if(toggleBtn){toggleBtn.addEventListener("click",function(){' +
+          'kmEnabled=!kmEnabled;' +
+          'if(kmEnabled){doc.body.classList.remove("km-disabled");}else{doc.body.classList.add("km-disabled");}' +
+          'setToggleLabel();' +
+        '});}' +
+
+        'if(printBtn){printBtn.addEventListener("click",function(){window.print();});}' +
+
+        'function fallbackCopy(text){' +
+          'var ta=doc.createElement("textarea");' +
+          'ta.value=text;ta.style.position="fixed";ta.style.left="-9999px";' +
+          'doc.body.appendChild(ta);ta.focus();ta.select();' +
+          'try{doc.execCommand("copy");}catch(e){}' +
+          'doc.body.removeChild(ta);' +
+          'alert("Copied trip routes. Paste directly into Excel or Sheets.");' +
+        '}' +
+
+        'if(copyBtn){copyBtn.addEventListener("click",function(){' +
+          'var rows=[];' +
+          'var cards=doc.querySelectorAll(".card");' +
+          'cards.forEach(function(card){' +
+            'var areaNum=card.getAttribute("data-area-num")||"";' +
+            'var cityBare=card.getAttribute("data-area-city")||"";' +
+            'var trs=card.querySelectorAll("tbody tr");' +
+            'trs.forEach(function(tr){' +
+              'var tds=tr.querySelectorAll("td");' +
+              'if(tds.length<4)return;' +
+              'var tripDir=tds[0].innerText.trim();' +
+              'var descCell=tds[1];' +
+              'var desc=descCell.getAttribute("data-desc")||descCell.innerText.trim();' +
+              'var totalKm=tds[2].innerText.trim();' +
+              'var totalMin=tds[3].innerText.trim();' +
+              'rows.push([areaNum,cityBare,tripDir,desc,totalKm,totalMin]);' +
+            '});' +
+          '});' +
+          'if(!rows.length){alert("No trip rows to copy.");return;}' +
+          'var header=["Area","City","Trip dir","Street-by-street","Total km","Total min"];' +
+          'var lines=[header].concat(rows).map(function(r){' +
+            'return r.map(function(v){return String(v==null?"":v);}).join("\\t");' +  // TAB-separated
+          '});' +
+          'var text=lines.join("\\n");' +
+          'if(navigator.clipboard&&navigator.clipboard.writeText){' +
+            'navigator.clipboard.writeText(text).then(function(){' +
+              'alert("Copied trip routes. Paste directly into Excel or Sheets.");' +
+            '},function(){fallbackCopy(text);});' +
+          '}else{fallbackCopy(text);}' +
+        '});}' +
+
+        'if(toggleBtn){setToggleLabel();}' +
+      '})();' +
+      '<\/script>' +
+      '</body></html>';
+
+    w.document.write(html);
+    w.document.close();
   }
 
-  /**************************************************************
-   * Leaflet Control (one-button compact)
-   **************************************************************/
+  /******************************************************************
+   * Leaflet control wiring
+   ******************************************************************/
   const ReportControl = L.Control.extend({
     options: { position: 'topleft' },
     onAdd: function () {
       const div = L.DomUtil.create('div', 'report-control');
       div.innerHTML = `
+        <div class="routing-header"><strong>Report</strong></div>
         <div class="routing-row">
           <button type="button" id="rt-print-report">Print Report</button>
         </div>
@@ -483,15 +821,13 @@
           printReport();
         });
       }
-
       L.DomEvent.disableClickPropagation(div);
-      L.DomEvent.disableScrollPropagation(div);
       return div;
     }
   });
 
   function initWhenReady() {
-    if (global.L && global.map) {
+    if (global.map && (global.map._loaded || global.map._size)) {
       try {
         global.map.addControl(new ReportControl());
       } catch (e) {
