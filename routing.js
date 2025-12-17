@@ -471,7 +471,19 @@
         throw lastErr;
       }
 
-      // ORS 2099 sometimes indicates lon/lat swapped; try swapping destination coords once.
+      
+      // ORS 2018: "Use normal algorithm with less overhead instead if no alternatives are required"
+      // This typically happens when we requested alternative_routes but the server
+      // cannot provide them for this request. In that case, retry once WITHOUT
+      // alternative_routes and accept the single route that ORS returns.
+      const is2018 = msg.includes('"code":2018') || msg.includes('code":2018') || msg.includes('code:2018');
+      if (is2018 && baseBody.alternative_routes) {
+        const bodyNoAlt = { ...baseBody };
+        delete bodyNoAlt.alternative_routes;
+        return await attempt(bodyNoAlt);
+      }
+
+// ORS 2099 sometimes indicates lon/lat swapped; try swapping destination coords once.
       const is2099 = msg.includes('ORS 500') && (msg.includes('"code":2099') || msg.includes('code:2099'));
       if (!is2099) throw e;
       const dSwap = sanitizeLonLat([d[1], d[0]]);
