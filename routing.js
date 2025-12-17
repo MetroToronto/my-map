@@ -634,7 +634,8 @@
         out.push({
           lon: t[0],
           lat: t[1],
-          label: t[2] || 'Zone'
+          label: t[2] || 'Zone',
+          layer: null
         });
       } else if (typeof t === 'object') {
         const lon = t.lon ?? t.lng ?? t.x ?? (t.center && t.center[0]);
@@ -643,7 +644,8 @@
         out.push({
           lon: num(lon),
           lat: num(lat),
-          label: t.label || t.name || 'Zone'
+          label: t.label || t.name || 'Zone',
+          layer: t.layer || t.zoneLayer || null
         });
       }
     }
@@ -950,12 +952,13 @@
       S.lastTrips = [];
 
       for (const t of targets) {
-        const dest = sanitizeLonLat([t.lon, t.lat]);
+        const dest  = sanitizeLonLat([t.lon, t.lat]);
+        const layer = t.layer || null;
         const o = reverse ? dest : origin;
         const d = reverse ? origin : dest;
 
         await RateLimiter.beforeRequest();
-        const json = await getRoutes(o, d, 1);
+        const json = await getRoutes(o, d, 1, { layer, pdSide: (reverse ? 'origin' : 'dest') });
         const feat = Array.isArray(json.features) ? json.features[0] : null;
         if (!feat) continue;
 
