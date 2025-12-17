@@ -254,6 +254,15 @@ fetch(PD_URL)
     const btnToggle  = document.getElementById('pd-toggle');
     const controlDiv = listEl.closest('.pd-control');
 
+    // Allow scrolling the PD list without zooming the map
+    try {
+      if (window.L && L && L.DomEvent && listEl) {
+        L.DomEvent.disableScrollPropagation(listEl);
+        L.DomEvent.disableClickPropagation(listEl);
+      }
+    } catch {}
+
+
     // Show all PDs initially + fit
     pdIndex.forEach(show);
     try {
