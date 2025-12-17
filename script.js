@@ -10,9 +10,14 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap'
 }).addTo(map);
 
-// Geocoder (non-fatal if missing)
+// ===================== Geocoder (search bar) =====================
+// Force the geocoder into the TOP LEFT, so it can sit above the PD/Zone/Trip cards
 try {
-  const geocoderCtl = L.Control.geocoder({ collapsed: false, defaultMarkGeocode: true }).addTo(map);
+  const geocoderCtl = L.Control.geocoder({
+    position: 'topleft',
+    collapsed: false,
+    defaultMarkGeocode: true
+  }).addTo(map);
 
   // Remember last picked address for routing.js to use as origin
   geocoderCtl.on('markgeocode', (e) => {
@@ -219,10 +224,11 @@ fetch(PD_URL)
 
     // PD Control UI
     const PDControl = L.Control.extend({
-      // MOVED TO LEFT
+      // LEFT side stack
       options: { position: 'topleft' },
       onAdd: function () {
         const div = L.DomUtil.create('div', 'pd-control collapsed');
+        div.dataset.role = 'pd';            // mark for re-ordering
         div.innerHTML = `
           <div class="pd-header">
             <strong>Planning Districts</strong>
@@ -344,7 +350,7 @@ fetch(PD_URL)
   });
 
 // =====================================================================
-// ===================== Planning Zones ================================
+// ===================== Traffic (Planning) Zones ======================
 // =====================================================================
 const ZONES_URL        = 'data/tts_zones.json?v=' + Date.now();
 const ZONE_LABEL_ZOOM  = 14;
@@ -431,13 +437,13 @@ fetch(ZONES_URL)
 
     // Zones control (Engage / Disengage) with inline search
     const ZonesControl = L.Control.extend({
-      // MOVED TO LEFT
       options: { position: 'topleft' },
       onAdd: function () {
         const div = L.DomUtil.create('div', 'pd-control');
+        div.dataset.role = 'zones';        // mark for re-ordering
         div.innerHTML = `
           <div class="pd-header">
-            <strong>Planning Zones</strong>
+            <strong>Traffic Zones</strong>
             <div class="pd-actions">
               <button type="button" id="pz-engage">Engage</button>
               <button type="button" id="pz-disengage">Disengage</button>
@@ -681,3 +687,38 @@ fetch(ZONES_URL)
   .catch(err => {
     console.error('Failed to load Planning Zones:', err);
   });
+
+// =====================================================================
+// Order the controls in the left stack
+// Desired order (top → bottom):
+//   Search bar → Planning Districts → Traffic Zones → Distribute Trips → Report
+//   (Trip + Report controls are created in routing.js / report.js)
+(function setupControlOrdering() {
+  const MAX_TRIES = 25;
+  let tries = 0;
+
+  function tryReorder() {
+    const container = document.querySelector('.leaflet-top.leaflet-left');
+    if (!container) return false;
+
+    const geocoder = container.querySelector('.leaflet-control-geocoder');
+    const pdCtl    = container.querySelector('.pd-control[data-role="pd"]');
+    const tzCtl    = container.querySelector('.pd-control[data-role="zones"]');
+    const tripCtl  = container.querySelector('.routing-control');
+    const repCtl   = container.querySelector('.report-control');
+
+    // Wait until all controls exist
+    if (!geocoder || !pdCtl || !tzCtl || !tripCtl || !repCtl) return false;
+
+    // Append in the desired order (appendChild moves nodes)
+    [geocoder, pdCtl, tzCtl, tripCtl, repCtl].forEach(el => {
+      if (el && el.parentNode === container) container.appendChild(el);
+    });
+    return true;
+  }
+
+  const id = setInterval(() => {
+    tries += 1;
+    if (tryReorder() || tries >= MAX_TRIES) clearInterval(id);
+  }, 300);
+})();
