@@ -254,15 +254,6 @@ fetch(PD_URL)
     const btnToggle  = document.getElementById('pd-toggle');
     const controlDiv = listEl.closest('.pd-control');
 
-    // Allow scrolling the PD list without zooming the map
-    try {
-      if (window.L && L && L.DomEvent && listEl) {
-        L.DomEvent.disableScrollPropagation(listEl);
-        L.DomEvent.disableClickPropagation(listEl);
-      }
-    } catch {}
-
-
     // Show all PDs initially + fit
     pdIndex.forEach(show);
     try {
@@ -432,6 +423,8 @@ fetch(ZONES_URL)
     });
 
     // Expose helper for routing.js: all zone targets for a PD
+    // Each item includes lon/lat/label plus a Leaflet layer so routing.js
+    // can apply the same "inside polygon" fallback that PDs use.
     window.getZoneTargetsForPD = function (pdKey) {
       const feats = zonesByKey.get(String(pdKey)) || [];
       const out = [];
@@ -439,7 +432,15 @@ fetch(ZONES_URL)
         const c = centerOfZoneFeature(f);
         if (!c) continue;
         const label = 'Zone ' + zoneKeyFromProps(f.properties || {});
-        out.push({ lon: c.lng, lat: c.lat, label });
+        let layer = null;
+        try {
+          const tmp = L.geoJSON(f);
+          const layers = (tmp && typeof tmp.getLayers === 'function') ? tmp.getLayers() : [];
+          layer = layers[0] || null;
+        } catch (_) {
+          layer = null;
+        }
+        out.push({ lon: c.lng, lat: c.lat, label, layer });
       }
       return out;
     };
@@ -644,14 +645,19 @@ fetch(ZONES_URL)
     };
 
     // Expose a helper for routing.js to get the currently selected Zone
-    // Returns an array of [lon, lat, label] (0 or 1 element).
+    // Returns an array of 0 or 1 objects with lon/lat/label/layer.
     window.getSelectedZoneTargets = function () {
       const out = [];
       if (selectedZoneLayer && typeof selectedZoneLayer.getBounds === 'function') {
         const center = selectedZoneLayer.getBounds().getCenter();
         const props  = (selectedZoneLayer.feature && selectedZoneLayer.feature.properties) || {};
         const zName  = zoneKeyFromProps(props || {});
-        out.push([center.lng, center.lat, `Zone ${zName}`]);
+        out.push({
+          lon: center.lng,
+          lat: center.lat,
+          label: `Zone ${zName}`,
+          layer: selectedZoneLayer
+        });
       }
       return out;
     };
