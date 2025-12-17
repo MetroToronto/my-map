@@ -168,3 +168,94 @@ button.ghost { background: var(--btn-bg-ghost); }
 /* ---------- Top geocoder (match 250px) ---------- */
 .leaflet-control-geocoder { width: 250px; max-width: 250px; }
 .leaflet-control-geocoder-form input { font-size: 16px; padding: 8px 10px; height: 38px; }
+/* ---------- Compact left controls (UI polish) ---------- */
+:root{
+  --ui-width: 250px;
+  --ui-font: 12px;
+  --ui-title: 16px;
+  --ui-gap-tight: 6px;
+  --ui-btn-font: 11px;
+  --ui-btn-pad-y: 5px;
+  --ui-btn-pad-x: 6px;
+}
+
+/* Make all left cards consistent + slightly smaller text */
+.pd-control,
+.routing-control,
+.report-control{
+  width: var(--ui-width);
+  padding: 9px;
+  font: var(--ui-font)/1.25 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+/* Headings */
+.pd-header strong,
+.routing-header strong{
+  font-size: var(--ui-title);
+  margin-bottom: 6px;
+}
+
+/* One-row action bars */
+.pd-actions,
+.routing-actions{
+  gap: var(--ui-gap-tight);
+  flex-wrap: nowrap;
+}
+
+/* Buttons smaller, allow label wrap inside each button so the row never wraps */
+.pd-control button,
+.routing-control button,
+.report-control button{
+  font-size: var(--ui-btn-font);
+  padding: var(--ui-btn-pad-y) var(--ui-btn-pad-x);
+  line-height: 1.1;
+  white-space: normal;
+}
+
+/* Make PD buttons share space evenly */
+.pd-actions > button{
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Zones: keep Engage/Disengage compact, let the Zone # input fill the rest */
+.pd-control[data-role="zones"] .pd-actions > button{
+  flex: 0 0 auto;
+}
+.pz-inline-search{
+  flex: 1 1 auto;
+  min-width: 85px;
+  height: 30px;
+  padding: 5px 7px;
+  font-size: var(--ui-btn-font);
+}
+
+/* PD list + route count inputs a bit smaller */
+.pd-route-count{
+  width: 42px;
+  height: 28px;
+  padding: 3px 6px;
+  font-size: var(--ui-btn-font);
+}
+
+/* Trip generator buttons share width (labels may wrap within each button) */
+.routing-actions > button{
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Report: single full-width button */
+.report-btn{
+  width: 100%;
+}
+
+/* Geocoder/search bar width + smaller input to match cards */
+.leaflet-control-geocoder{
+  width: var(--ui-width);
+  max-width: var(--ui-width);
+}
+.leaflet-control-geocoder-form input{
+  font-size: 13px;
+  padding: 6px 8px;
+  height: 34px;
+}
