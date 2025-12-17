@@ -359,13 +359,15 @@
     return prefs;
   }
 
+  
   function applyAvoidPreferences(json, prefs) {
     if (!prefs || !prefs.hasRules || !json || !Array.isArray(json.features)) return json;
     const rules = prefs.rules || [];
 
+    // Score each feature based on how many "avoid" streets it touches.
     const wrapped = json.features.map((feat, idx) => {
       let score = 0;
-      const props = feat.properties || {};
+      const props    = feat.properties || {};
       const segments = Array.isArray(props.segments) ? props.segments : [];
 
       for (const seg of segments) {
@@ -377,29 +379,44 @@
 
           for (const rule of rules) {
             if (!rule) continue;
+
+            // Special handling for the 407 checkbox – any step name
+            // containing "407" counts strongly against this alternative.
             if (rule.highway407) {
               if (name.includes('407')) score += 2;
               continue;
             }
+
             if (!name.includes(rule.name)) continue;
             if (rule.muni && !name.includes(rule.muni)) continue;
             score += 1;
           }
         }
       }
+
       return { feat, idx, score };
     });
 
+    if (!wrapped.length) return json;
+
+    // We want to strictly prefer routes with the *lowest* score.
     wrapped.sort((a, b) => {
       if (a.score !== b.score) return a.score - b.score;
       return a.idx - b.idx;
     });
 
-    json.features = wrapped.map(w => w.feat);
+    const bestScore = wrapped[0].score;
+
+    // Keep only routes whose score is equal to the minimum.
+    // This means: if there is at least one route that fully avoids
+    // the restricted streets (score 0), we drop all routes that use them.
+    const filtered = wrapped.filter(w => w.score === bestScore);
+
+    json.features = filtered.map(w => w.feat);
     return json;
   }
 
-  function routeTouchesLayer(geojson, layer) {
+function routeTouchesLayer(geojson, layer) {
     if (!layer || !geojson || !Array.isArray(geojson.features) || !geojson.features[0]) return true;
     const feat = geojson.features[0];
     if (!feat.geometry || feat.geometry.type !== 'LineString' || !Array.isArray(feat.geometry.coordinates)) return true;
