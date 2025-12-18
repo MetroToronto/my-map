@@ -254,6 +254,26 @@ fetch(PD_URL)
     const btnToggle  = document.getElementById('pd-toggle');
     const controlDiv = listEl.closest('.pd-control');
 
+    // Prevent mousewheel over the PD control (including the header/buttons)
+    // from zooming the map. If the wheel happens over the header/buttons,
+    // manually scroll the PD list so it still feels natural.
+    if (controlDiv && L && L.DomEvent && L.DomEvent.disableScrollPropagation) {
+      L.DomEvent.disableScrollPropagation(controlDiv);
+    }
+    if (listEl && controlDiv) {
+      controlDiv.addEventListener('wheel', (e) => {
+        // If the wheel is already over the scrollable list itself, let the list handle it.
+        if (e.target && typeof e.target.closest === 'function' && e.target.closest('#pd-list')) return;
+
+        // Only hijack scrolling if the PD list can actually scroll.
+        if (listEl.scrollHeight <= listEl.clientHeight) return;
+
+        listEl.scrollTop += e.deltaY;
+        e.preventDefault();
+      }, { passive: false });
+    }
+
+
     // Show all PDs initially + fit
     pdIndex.forEach(show);
     try {
