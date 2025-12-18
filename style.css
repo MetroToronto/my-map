@@ -39,7 +39,7 @@ html, body {
 
 /* Logo card */
 .logo-control {
-  padding: 12px;
+  padding: 10px;
 }
 .logo-control .logo-inner {
   display: flex;
@@ -48,9 +48,9 @@ html, body {
 }
 .logo-control img {
   display: block;
-  width: 86%;
+  width: 92%;
   height: auto;
-  max-height: 120px;
+  max-height: 140px;
   object-fit: contain;
 }
 
