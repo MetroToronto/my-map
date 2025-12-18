@@ -10,6 +10,34 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap'
 }).addTo(map);
 
+
+// ===================== Company logo (bottom-left) =====================
+try {
+  const LogoControl = L.Control.extend({
+    options: { position: 'bottomleft' },
+    onAdd: function () {
+      const div = L.DomUtil.create('div', 'logo-control');
+      const imgPath = 'data/LEA_logo.png';
+      div.innerHTML = `
+        <div class="logo-inner">
+          <img src="${imgPath}" alt="LEA Consulting" loading="lazy" />
+        </div>
+      `;
+      // Prevent clicks/wheel on the logo card from affecting the map
+      if (L.DomEvent) {
+        L.DomEvent.disableClickPropagation(div);
+        if (L.DomEvent.disableScrollPropagation) L.DomEvent.disableScrollPropagation(div);
+      }
+      return div;
+    }
+  });
+
+  map.addControl(new LogoControl());
+} catch (e) {
+  console.warn('Logo control failed to load:', e);
+}
+
+
 // ===================== Geocoder (search bar) =====================
 // Force the geocoder into the TOP LEFT, so it can sit above the PD/Zone/Trip cards
 try {
