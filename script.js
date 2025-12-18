@@ -35,61 +35,83 @@ try {
   map.addControl(new LogoControl());
 
   // --- Auto-hide logo if it overlaps other controls (e.g., when PD list expands) ---
+  // Uses a class toggle (no display:none) to avoid flicker and keeps the element measurable.
   const _logoEl = document.querySelector('.logo-control');
+  let _logoHidden = false;
+
   function _rectsOverlap(a, b) {
     return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
   }
 
+  function _inflateRect(r, pad) {
+    return { left: r.left - pad, top: r.top - pad, right: r.right + pad, bottom: r.bottom + pad };
+  }
+
+  function _setLogoHidden(hidden) {
+    if (!_logoEl) return;
+    const next = !!hidden;
+    if (next === _logoHidden) return; // only change when state changes
+    _logoHidden = next;
+    _logoEl.classList.toggle('is-hidden', _logoHidden);
+  }
+
   function _updateLogoVisibility() {
     if (!_logoEl) return;
-    // Only consider visible logo
-    _logoEl.style.visibility = 'hidden'; // measure without flashing
-    const logoRect = _logoEl.getBoundingClientRect();
-    _logoEl.style.visibility = '';
 
-    // If logo is not in DOM or has 0 size, keep it visible (nothing to do)
-    if (logoRect.width === 0 || logoRect.height === 0) {
-      _logoEl.style.display = '';
+    const logoRect = _inflateRect(_logoEl.getBoundingClientRect(), 3);
+
+    // If logo has no size yet, keep it visible
+    if (logoRect.right - logoRect.left <= 0 || logoRect.bottom - logoRect.top <= 0) {
+      _setLogoHidden(false);
       return;
     }
 
     // Compare against the left-column controls (top-left stack)
     const leftStack = document.querySelectorAll('.leaflet-top.leaflet-left .leaflet-control');
     let conflict = false;
+
     leftStack.forEach(el => {
       if (conflict) return;
       if (!el || el === _logoEl) return;
-      const r = el.getBoundingClientRect();
-      // ignore offscreen / zero-size
-      if (r.width === 0 || r.height === 0) return;
+
+      const r0 = el.getBoundingClientRect();
+      if (r0.width === 0 || r0.height === 0) return;
+
+      const r = _inflateRect(r0, 2);
       if (_rectsOverlap(logoRect, r)) conflict = true;
     });
 
-    _logoEl.style.display = conflict ? 'none' : '';
+    _setLogoHidden(conflict);
   }
 
-  // Run after layout changes
   const _scheduleLogoCheck = (() => {
-    let t = null;
+    let raf = 0;
     return () => {
-      if (t) cancelAnimationFrame(t);
-      t = requestAnimationFrame(() => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
         _updateLogoVisibility();
       });
     };
   })();
 
-  // Watch for control layout changes (expand/collapse, etc.)
+  // Watch for layout changes (expand/collapse, other controls changing height)
   const _ctrlContainer = document.querySelector('.leaflet-control-container');
   if (_ctrlContainer && window.MutationObserver) {
-    const obs = new MutationObserver(_scheduleLogoCheck);
-    obs.observe(_ctrlContainer, { childList: true, subtree: true, attributes: true });
+    const obs = new MutationObserver((mutations) => {
+      // Ignore mutations caused by toggling the logo itself to prevent loops
+      for (const m of mutations) {
+        if (_logoEl && (m.target === _logoEl || (_logoEl.contains && _logoEl.contains(m.target)))) continue;
+        _scheduleLogoCheck();
+        break;
+      }
+    });
+    obs.observe(_ctrlContainer, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
   }
 
   window.addEventListener('resize', _scheduleLogoCheck);
-  // initial check
-  setTimeout(_scheduleLogoCheck, 50);
-
+  // Initial check after controls render
+  setTimeout(_scheduleLogoCheck, 100);
 } catch (e) {
   console.warn('Logo control failed to load:', e);
 }
