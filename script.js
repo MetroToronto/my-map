@@ -227,7 +227,7 @@ fetch(PD_URL)
       // LEFT side stack
       options: { position: 'topleft' },
       onAdd: function () {
-        const div = L.DomUtil.create('div', 'pd-control collapsed');
+        const div = L.DomUtil.create('div', 'pd-control');
         div.dataset.role = 'pd';            // mark for re-ordering
         div.innerHTML = `
           <div class="pd-header">
@@ -235,7 +235,7 @@ fetch(PD_URL)
             <div class="pd-actions">
               <button type="button" id="pd-select-all">Select all</button>
               <button type="button" id="pd-clear-all">Clear all</button>
-              <button type="button" id="pd-toggle" class="grow">Expand ▾</button>
+              <button type="button" id="pd-toggle" class="grow">Collapse ▴</button>
             </div>
           </div>
           <div class="pd-list" id="pd-list">${itemsHTML}</div>
@@ -253,6 +253,32 @@ fetch(PD_URL)
     const btnClr     = document.getElementById('pd-clear-all');
     const btnToggle  = document.getElementById('pd-toggle');
     const controlDiv = listEl.closest('.pd-control');
+
+    // --- Mouse wheel behavior (PD panel) ---
+    // 1) Scrolling inside the PD panel should NOT zoom the map.
+    // 2) Scrolling inside the white list should scroll the list normally.
+    // 3) Scrolling over the header/buttons should also scroll the list (not zoom the map).
+    if (controlDiv && typeof L !== 'undefined' && L.DomEvent) {
+      // Stops wheel events from propagating to the map
+      if (L.DomEvent.disableScrollPropagation) {
+        L.DomEvent.disableScrollPropagation(controlDiv);
+        L.DomEvent.disableScrollPropagation(listEl);
+      }
+      // Extra safety: stop bubbling from the list itself (do not prevent default so it can scroll)
+      listEl.addEventListener('wheel', (e) => { e.stopPropagation(); }, { passive: true });
+
+      // When wheel is used over header/buttons area, scroll the list instead
+      controlDiv.addEventListener('wheel', (e) => {
+        // If the wheel is happening inside the list, let native scrolling handle it
+        if (e.target && listEl.contains(e.target)) return;
+
+        // Otherwise (header/buttons area): scroll the list, don't zoom the map
+        e.preventDefault();
+        e.stopPropagation();
+        listEl.scrollTop += e.deltaY;
+      }, { passive: false });
+    }
+
 
     // Show all PDs initially + fit
     pdIndex.forEach(show);
@@ -308,13 +334,29 @@ fetch(PD_URL)
       clearPDSelection();
     });
 
+    let _pdCollapsed = false;
+
+    function _setPDCollapsed(state) {
+      _pdCollapsed = !!state;
+      if (_pdCollapsed) {
+        listEl.style.display = 'none';
+        btnToggle.textContent = 'Expand ▾';
+        controlDiv.classList.add('collapsed');
+      } else {
+        listEl.style.display = '';
+        btnToggle.textContent = 'Collapse ▴';
+        controlDiv.classList.remove('collapsed');
+      }
+    }
+
+    // Start expanded (matches the original look: ~10 PDs visible + scrollbar)
+    _setPDCollapsed(false);
+
     btnToggle.addEventListener('click', () => {
-      controlDiv.classList.toggle('collapsed');
-      const isCollapsed = controlDiv.classList.contains('collapsed');
-      btnToggle.textContent = isCollapsed ? 'Expand ▾' : 'Collapse ▴';
+      _setPDCollapsed(!_pdCollapsed);
     });
 
-    // Hide PD label when zoomed in too far
+// Hide PD label when zoomed in too far
     map.on('zoomend', () => {
       const zoom = map.getZoom();
       if (zoom >= PD_LABEL_HIDE_ZOOM) {
