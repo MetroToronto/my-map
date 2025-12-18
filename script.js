@@ -159,7 +159,7 @@
   const pdGroup = L.layerGroup().addTo(map);
   const pdLabelGroup = L.layerGroup().addTo(map);
 
-  const PD_LABEL_MIN_ZOOM = 11;        // show labels when closer         // show labels when closer
+  const PD_LABEL_MIN_ZOOM = 12;        // show labels when closer         // show labels when closer
   const PD_LABEL_MAX_FS   = 18;
   const PD_LABEL_MIN_FS   = 11;
 
@@ -182,7 +182,7 @@
     if (_labelRaf) cancelAnimationFrame(_labelRaf);
     _labelRaf = requestAnimationFrame(() => {
       _labelRaf = 0;
-      scheduleLabelUpdate();
+      updatePDLabels();
       updatePZLabels();
     });
   }
@@ -356,32 +356,19 @@ if (!show || hideBecauseZones) {
         };
 
         cbx.addEventListener('change', (ev) => {
-          // Checkbox should feel instant; replicate ctrl/cmd add/remove from the map.
+          // Checkbox toggles this PD only (like ctrl/cmd toggle on the map).
+          // This lets you check/uncheck multiple PDs without affecting the rest.
           ev.stopPropagation();
-          const additive = !!(ev.ctrlKey || ev.metaKey);
           const checked = !!cbx.checked;
 
-          if (additive) {
-            // Toggle this PD only
-            setPDSelected(key, checked);
-            if (checked) selectedPDs.add(key);
-            else selectedPDs.delete(key);
-          } else {
-            if (checked) {
-              // Single-select
-              clearAllPDSelection(true);
-              setPDSelected(key, true);
-              selectedPDs.add(key);
-            } else {
-              // Uncheck only this PD (do not force clear others)
-              setPDSelected(key, false);
-              selectedPDs.delete(key);
-            }
-          }
+          setPDSelected(key, checked);
+          if (checked) selectedPDs.add(key);
+          else selectedPDs.delete(key);
+
           scheduleLabelUpdate();
         });
 
-        // Clicking the name/row selects (supports ctrl/cmd add/remove)
+        // Clicking the name/row selects (supports ctrl/cmd add/remove) (supports ctrl/cmd add/remove)
         cbx.addEventListener('click', (ev) => { ev.stopPropagation(); });
 nameEl.addEventListener('click', clickHandler);
         row.addEventListener('click', (ev) => {
@@ -591,7 +578,7 @@ nameEl.addEventListener('click', clickHandler);
     fillOpacity: 0.10
   };
 
-  const PZ_LABEL_MIN_ZOOM = 13;
+  const PZ_LABEL_MIN_ZOOM = 12;
   const PZ_LABEL_MIN_FS   = 10;
   const PZ_LABEL_MAX_FS   = 15;
 
