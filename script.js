@@ -10,6 +10,100 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap'
 }).addTo(map);
 
+// ===================== Company logo (bottom-left) =====================
+try {
+  const LogoControl = L.Control.extend({
+    options: { position: 'bottomleft' },
+    onAdd: function () {
+      const div = L.DomUtil.create('div', 'logo-control');
+      div.innerHTML = `
+        <div class="logo-inner">
+          <img src="data/LEA_logo.png" alt="LEA Consulting" loading="lazy">
+        </div>
+      `;
+      if (L.DomEvent) {
+        L.DomEvent.disableClickPropagation(div);
+        if (L.DomEvent.disableScrollPropagation) L.DomEvent.disableScrollPropagation(div);
+      }
+      return div;
+    }
+  });
+
+  map.addControl(new LogoControl());
+
+  // Auto-hide logo if it overlaps the left column controls (prevents clutter).
+  const _logoEl = document.querySelector('.logo-control');
+  let _logoHidden = false;
+
+  function _rectsOverlap(a, b) {
+    return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+  }
+
+  function _inflateRect(r, pad) {
+    return { left: r.left - pad, top: r.top - pad, right: r.right + pad, bottom: r.bottom + pad };
+  }
+
+  function _setLogoHidden(hidden) {
+    if (!_logoEl) return;
+    const next = !!hidden;
+    if (next === _logoHidden) return;
+    _logoHidden = next;
+    _logoEl.classList.toggle('is-hidden', _logoHidden);
+  }
+
+  function _updateLogoVisibility() {
+    if (!_logoEl) return;
+    const logoRect = _inflateRect(_logoEl.getBoundingClientRect(), 3);
+    if ((logoRect.right - logoRect.left) <= 0 || (logoRect.bottom - logoRect.top) <= 0) {
+      _setLogoHidden(false);
+      return;
+    }
+
+    const leftStack = document.querySelectorAll('.leaflet-top.leaflet-left .leaflet-control');
+    let conflict = false;
+    leftStack.forEach(el => {
+      if (conflict) return;
+      if (!el || el === _logoEl) return;
+      const r0 = el.getBoundingClientRect();
+      if (r0.width === 0 || r0.height === 0) return;
+      const r = _inflateRect(r0, 2);
+      if (_rectsOverlap(logoRect, r)) conflict = true;
+    });
+
+    _setLogoHidden(conflict);
+  }
+
+  const _scheduleLogoCheck = (() => {
+    let raf = 0;
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        _updateLogoVisibility();
+      });
+    };
+  })();
+
+  const _ctrlContainer = document.querySelector('.leaflet-control-container');
+  if (_ctrlContainer && window.MutationObserver) {
+    const obs = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (_logoEl && (m.target === _logoEl || (_logoEl.contains && _logoEl.contains(m.target)))) continue;
+        _scheduleLogoCheck();
+        break;
+      }
+    });
+    obs.observe(_ctrlContainer, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+  }
+
+  window.addEventListener('resize', _scheduleLogoCheck);
+  setTimeout(_scheduleLogoCheck, 150);
+} catch (e) {
+  console.warn('Logo control failed to load:', e);
+}
+
+
+
 // ===================== Geocoder (search bar) =====================
 // Force the geocoder into the TOP LEFT, so it can sit above the PD/Zone/Trip cards
 try {
@@ -63,139 +157,166 @@ window._zonesShowFor     = undefined; // (pdKey, focusZoneId?) -> void
 window._zonesClear       = undefined; // () -> void
 
 // =====================================================================
+// =====================================================================
 // ===================== Planning Districts ============================
 // =====================================================================
 const PD_URL = 'data/tts_pds.json?v=' + Date.now();
 
 fetch(PD_URL)
-  .then(r => r.json())
+  .then(r => {
+    if (!r.ok) throw new Error(`HTTP ${r.status} for ${r.url || PD_URL}`);
+    return r.text();
+  })
+  .then(txt => {
+    try {
+      return JSON.parse(txt);
+    } catch (e) {
+      console.error('PD JSON parse error:', e, txt.slice(0, 200));
+      throw new Error('Invalid PD GeoJSON');
+    }
+  })
   .then(geo => {
-    // --- Styles ---
-    // Base: always visible, light orange (NOT the same thing as "selected")
-    const baseStyle     = { color: '#ff8c1a', weight: 2, fillColor: '#ffd1a6', fillOpacity: 0.18 };
-    // Selected: red
-    const selectedStyle = { color: '#d40000', weight: 4, fillColor: '#ff6666', fillOpacity: 0.22 };
+    // ---- Styles ----
+    // Base layer: ALWAYS visible (light orange)
+    const baseStyle = {
+      color: '#ff9f1c',
+      weight: 2,
+      opacity: 0.9,
+      fillColor: '#ffd08a',
+      fillOpacity: 0.22
+    };
 
-    // Show PD names only when zoomed in (to avoid clutter)
-    const PD_LABEL_SHOW_ZOOM = 10;
+    // Selected layer: only for checked PDs (red)
+    const selectedStyle = {
+      color: '#d41414',
+      weight: 3,
+      opacity: 1,
+      fillColor: '#ff3b30',
+      fillOpacity: 0.30
+    };
 
-    const group = L.featureGroup().addTo(map);
+    const hoverStyle = {
+      weight: 3,
+      opacity: 1
+    };
 
-    // State: which PDs are selected (checkbox-checked and red on the map)
-    const selectedKeys = new Set();
+    // Layer group for PD polygons (always on)
+    const pdGroup = L.layerGroup().addTo(map);
 
+    // Label group (shown only when zoomed in)
+    const PD_LABEL_ZOOM = 10;
+    const pdLabelGroup = L.layerGroup();
+
+    // Build PD index
     const pdIndex = [];
 
-    function applyPDStyles() {
-      pdIndex.forEach(i => {
-        try {
-          i.layer.setStyle(selectedKeys.has(i.key) ? selectedStyle : baseStyle);
-        } catch {}
-      });
+    function pdKeyFromProps(p) {
+      return String(
+        p?.PD_KEY ?? p?.pd_key ?? p?.PD ?? p?.pd ?? p?.id ?? p?.ID ?? p?.Name ?? p?.name ?? ''
+      ).trim();
     }
 
-    function syncPDListSelection() {
-      document.querySelectorAll('.pd-cbx').forEach(cbx => {
-        const key = decodeURIComponent(cbx.dataset.key || '');
-        const isSel = selectedKeys.has(key);
-        cbx.checked = isSel;
-
-        const row = cbx.closest('.pd-item');
-        if (row) row.classList.toggle('selected', isSel);
-      });
+    function pdNameFromProps(p) {
+      return String(
+        p?.PD_NAME ?? p?.pd_name ?? p?.NAME ?? p?.name ?? p?.Name ?? pdKeyFromProps(p)
+      ).trim();
     }
 
-    function setSingleSelection(item, { zoom = true } = {}) {
-      if (!item) return;
-      selectedKeys.clear();
-      selectedKeys.add(item.key);
-      applyPDStyles();
-      syncPDListSelection();
-      if (zoom) {
-        try { map.fitBounds(item.bounds, { padding: [20, 20] }); } catch {}
+    function pdNoFromName(name) {
+      // If PD names start with a number ("1 Something"), capture it; else null.
+      const m = String(name || '').trim().match(/^(\d+)\b/);
+      return m ? Number(m[1]) : null;
+    }
+
+    // Selection state (checkboxes reflect this)
+    let selectedKeys = new Set();
+
+    function updatePDStyles() {
+      for (const item of pdIndex) {
+        const isSel = selectedKeys.has(item.key);
+        item.layer.setStyle(isSel ? selectedStyle : baseStyle);
+        if (isSel) {
+          try { item.layer.bringToFront(); } catch {}
+        }
       }
     }
 
-    function toggleSelection(item, { zoom = false } = {}) {
-      if (!item) return;
-      if (selectedKeys.has(item.key)) selectedKeys.delete(item.key);
-      else selectedKeys.add(item.key);
-      applyPDStyles();
-      syncPDListSelection();
-      if (zoom) {
-        try { map.fitBounds(item.bounds, { padding: [20, 20] }); } catch {}
+    function syncPDCheckboxes() {
+      for (const item of pdIndex) {
+        const id = `pd-${encodeURIComponent(item.key)}`;
+        const cbx = document.getElementById(id);
+        if (cbx) cbx.checked = selectedKeys.has(item.key);
       }
     }
 
-    function clearPDSelection() {
-      selectedKeys.clear();
-      applyPDStyles();
-      syncPDListSelection();
-      map.closePopup();
+    function setSelectionSingle(key) {
+      selectedKeys = new Set([key]);
+      syncPDCheckboxes();
+      updatePDStyles();
+    }
+
+    function toggleSelectionKey(key) {
+      const next = new Set(selectedKeys);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      selectedKeys = next;
+      syncPDCheckboxes();
+      updatePDStyles();
     }
 
     function selectAllPDs() {
-      selectedKeys.clear();
-      pdIndex.forEach(i => selectedKeys.add(i.key));
-      applyPDStyles();
-      syncPDListSelection();
+      selectedKeys = new Set(pdIndex.map(i => i.key));
+      syncPDCheckboxes();
+      updatePDStyles();
     }
 
-    // PD labels
-    function updatePDNameLabels() {
-      const z = map.getZoom();
-      const show = z >= PD_LABEL_SHOW_ZOOM;
-      pdIndex.forEach(i => {
-        if (!i || !i.layer || !i.bounds) return;
-        try {
-          if (show) i.layer.openTooltip(i.bounds.getCenter());
-          else i.layer.closeTooltip();
-        } catch {}
-      });
+    function clearAllPDs() {
+      selectedKeys = new Set();
+      syncPDCheckboxes();
+      updatePDStyles();
     }
 
-    // Build index + map layer
-    L.geoJSON(geo, {
+    function handlePDUserSelect(key, originalEvent) {
+      const ctrl = !!(originalEvent && (originalEvent.ctrlKey || originalEvent.metaKey));
+      if (ctrl) {
+        toggleSelectionKey(key);
+      } else {
+        // Single-select: switch selection to this PD
+        setSelectionSingle(key);
+      }
+    }
+
+    // Build GeoJSON layers
+    const pdGeoLayer = L.geoJSON(geo, {
       style: baseStyle,
-      onEachFeature: (f, layer) => {
-        const p = f?.properties || {};
-        const key  = pdKeyFromProps(p);
-        const name = pdNameFromProps(p);
-        const no   = (p?.PD_NO ?? p?.PDNo ?? p?.PD ?? p?.NUMBER ?? null);
+      onEachFeature: (feature, layer) => {
+        const props = feature?.properties || {};
+        const key = pdKeyFromProps(props);
+        const name = pdNameFromProps(props) || key;
+        const no = pdNoFromName(name);
 
-        layer.addTo(group);
+        const bounds = layer.getBounds ? layer.getBounds() : null;
 
-        const item = {
-          key,
-          name,
-          no : (no != null ? String(no) : null),
-          layer,
-          bounds: layer.getBounds()
-        };
+        const item = { key, name, no, layer, bounds, labelMarker: null };
         pdIndex.push(item);
 
-        // Bind label tooltip (we open/close it based on zoom level)
-        try {
-          layer.bindTooltip(item.name, {
-            permanent : true,
-            direction : 'center',
-            className : 'pd-name-label',
-            interactive: false
-          });
-          layer.closeTooltip();
-        } catch {}
+        layer.on('click', (e) => {
+          handlePDUserSelect(key, e.originalEvent);
+        });
 
-        // Click on polygon → select
-        layer.on('click', (ev) => {
-          const oe = ev?.originalEvent;
-          const multi = !!(oe && (oe.ctrlKey || oe.metaKey));
-          if (multi) toggleSelection(item, { zoom: false });
-          else setSingleSelection(item, { zoom: true });
+        layer.on('mouseover', () => {
+          layer.setStyle(hoverStyle);
+        });
+        layer.on('mouseout', () => {
+          // restore based on selection
+          layer.setStyle(selectedKeys.has(key) ? selectedStyle : baseStyle);
         });
       }
     });
 
-    // Sort PDs: by number then by name
+    pdGeoLayer.addTo(pdGroup);
+
+    // Sort PD list: by number then by name
     pdIndex.sort((a, b) => {
       const ah = a.no !== null;
       const bh = b.no !== null;
@@ -205,36 +326,60 @@ fetch(PD_URL)
       return a.name.localeCompare(b.name, undefined, { numeric: true });
     });
 
-    // Expose registry for routing/report code
-    window.PD_REGISTRY = {};
-    pdIndex.forEach(i => {
-      window.PD_REGISTRY[i.key] = { layer: i.layer, name: i.name };
-    });
+    // Labels: create markers once, toggle group at zoom threshold
+    function createPDLabelMarker(item) {
+      if (!item?.bounds) return null;
+      const center = item.bounds.getCenter();
+      const html = `<div class="pd-name-label">${item.name}</div>`;
+      return L.marker(center, {
+        interactive: false,
+        icon: L.divIcon({
+          className: 'pd-name-label-wrap',
+          html,
+          iconSize: null
+        })
+      });
+    }
 
-    // Helper: [lon, lat, label] for every checked/selected PD
-    window.getSelectedPDTargets = function () {
-      const boxes = Array.from(document.querySelectorAll('.pd-cbx:checked'));
-      const out   = [];
-      for (const box of boxes) {
-        const key  = decodeURIComponent(box.dataset.key || '');
-        const item = pdIndex.find(i => i.key === key);
-        if (!item || !item.bounds) continue;
-        const c = item.bounds.getCenter();
-        out.push([c.lng, c.lat, item.name || key]);
+    for (const item of pdIndex) {
+      const m = createPDLabelMarker(item);
+      if (m) {
+        item.labelMarker = m;
+        pdLabelGroup.addLayer(m);
       }
-      return out;
-    };
+    }
 
-    // Give Zones panel a way to "focus" a PD
-    window._pdSelectByKey = function _pdSelectByKey(key, { zoom = true } = {}) {
-      const item = pdIndex.find(i => String(i.key) === String(key));
-      if (item) setSingleSelection(item, { zoom });
-    };
-    window._pdClearSelection = function _pdClearSelection() {
-      clearPDSelection();
-    };
+    function updatePDLabelVisibility() {
+      const z = map.getZoom();
+      const shouldShow = z >= PD_LABEL_ZOOM;
+      if (shouldShow) {
+        if (!map.hasLayer(pdLabelGroup)) pdLabelGroup.addTo(map);
+      } else {
+        if (map.hasLayer(pdLabelGroup)) map.removeLayer(pdLabelGroup);
+      }
+    }
+    map.on('zoomend', updatePDLabelVisibility);
+    updatePDLabelVisibility();
 
-    // ---------------- PD Control UI ----------------
+    // ===== Build PD list UI =====
+    const itemsHTML = pdIndex.map(i => `
+      <div class="pd-item" data-key="${encodeURIComponent(i.key)}">
+        <label class="pd-left">
+          <input type="checkbox"
+                 class="pd-cbx"
+                 id="pd-${encodeURIComponent(i.key)}"
+                 data-key="${encodeURIComponent(i.key)}">
+          <span class="pd-name" data-key="${encodeURIComponent(i.key)}">${i.name}</span>
+        </label>
+        <input type="number"
+               class="pd-route-count"
+               min="0"
+               max="3"
+               value="1"
+               title="Number of routes to generate for this PD (0–3)">
+      </div>
+    `).join('');
+
     const PDControl = L.Control.extend({
       options: { position: 'topleft' },
       onAdd: function () {
@@ -249,12 +394,16 @@ fetch(PD_URL)
               <button type="button" id="pd-toggle" class="grow">Collapse ▴</button>
             </div>
           </div>
-          <div class="pd-list" id="pd-list"></div>
+          <div class="pd-list" id="pd-list">${itemsHTML}</div>
         `;
-        if (L.DomEvent) {
-          L.DomEvent.disableClickPropagation(div);
-          if (L.DomEvent.disableScrollPropagation) L.DomEvent.disableScrollPropagation(div);
-        }
+
+        // Match the geocoder width if present
+        const geocoderEl = document.querySelector('.leaflet-control-geocoder');
+        if (geocoderEl) div.style.width = geocoderEl.offsetWidth + 'px';
+
+        // Prevent click from panning map
+        if (L.DomEvent) L.DomEvent.disableClickPropagation(div);
+
         return div;
       }
     });
@@ -265,36 +414,22 @@ fetch(PD_URL)
     const btnAll     = document.getElementById('pd-select-all');
     const btnClr     = document.getElementById('pd-clear-all');
     const btnToggle  = document.getElementById('pd-toggle');
-    const controlDiv = listEl.closest('.pd-control');
+    const controlDiv = listEl ? listEl.closest('.pd-control') : null;
 
-    // Build the PD list UI (checkbox + name + route-count)
-    listEl.innerHTML = pdIndex.map(i => `
-      <div class="pd-item" data-key="${encodeURIComponent(i.key)}">
-        <input type="checkbox" class="pd-cbx" id="pd-${encodeURIComponent(i.key)}"
-               data-key="${encodeURIComponent(i.key)}">
-        <span class="pd-name" data-key="${encodeURIComponent(i.key)}">${i.name}</span>
-        <input type="number"
-               class="pd-route-count"
-               min="0"
-               max="3"
-               value="1"
-               title="Number of routes to generate for this PD (0–3)">
-      </div>
-    `).join('');
-
-    // --- Mouse wheel behavior (PD panel) ---
-    // Scroll inside the PD panel should NOT zoom the map.
-    // Scroll inside the white list should scroll the list normally.
-    // Scroll over the header/buttons should scroll the list (not zoom the map).
+    // --- Wheel behavior: never zoom map while cursor is in PD panel; allow list scrolling ---
     if (controlDiv && typeof L !== 'undefined' && L.DomEvent) {
       if (L.DomEvent.disableScrollPropagation) {
         L.DomEvent.disableScrollPropagation(controlDiv);
-        L.DomEvent.disableScrollPropagation(listEl);
+        if (listEl) L.DomEvent.disableScrollPropagation(listEl);
       }
-      // Extra safety: stop bubbling from the list itself (do not prevent default so it can scroll)
-      listEl.addEventListener('wheel', (e) => { e.stopPropagation(); }, { passive: true });
+      if (listEl) {
+        // allow native list scroll, but prevent bubbling to map
+        listEl.addEventListener('wheel', (e) => { e.stopPropagation(); }, { passive: true });
+      }
 
+      // When scrolling over header/buttons, scroll the list instead
       controlDiv.addEventListener('wheel', (e) => {
+        if (!listEl) return;
         if (e.target && listEl.contains(e.target)) return;
         e.preventDefault();
         e.stopPropagation();
@@ -302,88 +437,81 @@ fetch(PD_URL)
       }, { passive: false });
     }
 
-    // Clicking the map/list selects PDs.
-    // - Without Ctrl/Cmd: single-select (replaces selection)
-    // - With Ctrl/Cmd: toggle (add/remove while keeping others)
-    function handlePDKeyClick(key, multi, { zoom = true } = {}) {
-      const item = pdIndex.find(i => i.key === key);
-      if (!item) return;
-      if (multi) toggleSelection(item, { zoom: false });
-      else setSingleSelection(item, { zoom });
-    }
-
-    listEl.addEventListener('click', (e) => {
-      const t = e.target;
-
-      // Don't treat clicks in the route-count box as selection clicks
-      if (t && (t.classList?.contains('pd-route-count') || t.closest?.('.pd-route-count'))) return;
-
-      const row = t.closest?.('.pd-item');
-      if (!row) return;
-
-      const key = decodeURIComponent(row.dataset.key || '');
-      const multi = !!(e.ctrlKey || e.metaKey);
-
-      // If the user clicked the checkbox, we fully control checked state.
-      if (t.classList?.contains('pd-cbx')) {
-        e.preventDefault();
-      }
-
-      // Ctrl/Cmd click can also REMOVE a PD from selection
-      if (multi && selectedKeys.has(key)) {
-        const item = pdIndex.find(i => i.key === key);
-        toggleSelection(item, { zoom: false });
-        return;
-      }
-
-      handlePDKeyClick(key, multi, { zoom: true });
-    });
-
-    // Buttons
-    btnAll.addEventListener('click', () => {
-      selectAllPDs();
-      try {
-        map.fitBounds(group.getBounds(), { padding: [20, 20] });
-      } catch {}
-    });
-
-    btnClr.addEventListener('click', () => {
-      clearPDSelection();
-      // Keep base orange layer visible (do NOT remove from map)
-    });
-
-    // Expand / collapse list
+    // Collapse / Expand (only hides the list; PD polygons stay visible)
     let _pdCollapsed = false;
     function _setPDCollapsed(state) {
       _pdCollapsed = !!state;
+      if (!listEl) return;
       if (_pdCollapsed) {
         listEl.style.display = 'none';
         btnToggle.textContent = 'Expand ▾';
-        controlDiv.classList.add('collapsed');
+        if (controlDiv) controlDiv.classList.add('collapsed');
       } else {
         listEl.style.display = '';
         btnToggle.textContent = 'Collapse ▴';
-        controlDiv.classList.remove('collapsed');
+        if (controlDiv) controlDiv.classList.remove('collapsed');
       }
     }
     _setPDCollapsed(false);
-
     btnToggle.addEventListener('click', () => _setPDCollapsed(!_pdCollapsed));
 
-    // Initial view: show the PD orange layer immediately (already added), no selection
-    applyPDStyles();
-    syncPDListSelection();
-    updatePDNameLabels();
-    map.on('zoomend', updatePDNameLabels);
+    // List interactions: click checkbox or name selects PD.
+    // - No modifier: single-select
+    // - Ctrl/Cmd: toggle add/remove
+    if (listEl) {
+      listEl.addEventListener('click', (e) => {
+        const input = e.target.closest('.pd-route-count');
+        if (input) return; // don't change selection when editing counts
 
-    // Optional: start by framing all PDs if the user hasn't searched yet
-    try { map.fitBounds(group.getBounds(), { padding: [20, 20] }); } catch {}
+        const cbx = e.target.closest('.pd-cbx');
+        const nameEl = e.target.closest('.pd-name');
+        const itemEl = e.target.closest('.pd-item');
+        if (!cbx && !nameEl && !itemEl) return;
+
+        // key from whichever element we found
+        const keyEnc = (cbx && cbx.dataset.key) || (nameEl && nameEl.dataset.key) || (itemEl && itemEl.dataset.key) || '';
+        const key = decodeURIComponent(keyEnc);
+
+        // prevent native checkbox toggle; we control it
+        if (cbx) e.preventDefault();
+
+        handlePDUserSelect(key, e);
+      });
+    }
+
+    // Buttons
+    btnAll.addEventListener('click', () => selectAllPDs());
+    btnClr.addEventListener('click', () => clearAllPDs());
+
+    // Ensure initial styles (base layer visible, no selection)
+    clearAllPDs();
+
+    // === Routing hooks: PD registry + PD targets ===
+    window.PD_REGISTRY = {};
+    pdIndex.forEach(i => {
+      window.PD_REGISTRY[i.key] = { layer: i.layer, name: i.name };
+    });
+
+    // Helper: [lon, lat, label] for every checked PD (routing.js reads checkboxes)
+    window.getSelectedPDTargets = function () {
+      const boxes = Array.from(document.querySelectorAll('.pd-cbx:checked'));
+      const out   = [];
+      for (const box of boxes) {
+        const key  = decodeURIComponent(box.dataset.key || '');
+        const item = pdIndex.find(i => i.key === key);
+        if (!item || !item.bounds) continue;
+        const c = item.bounds.getCenter();
+        out.push([c.lng, c.lat, item.name || key]);
+      }
+      return out;
+    };
   })
   .catch(err => {
     console.error('Failed to load PDs:', err);
     alert('Could not load Planning Districts. See console for details.');
   });
 
+// ===================== Traffic (Planning) Zones ======================
 // =====================================================================
 const ZONES_URL        = 'data/tts_zones.json?v=' + Date.now();
 const ZONE_LABEL_ZOOM  = 14;
