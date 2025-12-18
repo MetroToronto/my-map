@@ -1,3 +1,12 @@
+/* =========================================================
+   style.css (DROP-IN)
+   Fixes:
+   - Removes accidental "..." truncation that breaks CSS parsing
+   - Makes all left-side cards + geocoder the same width
+   - Keeps PD buttons on one row; Zone buttons + Zone # on one row
+   - Smaller overall typography to prevent wrapping
+   ========================================================= */
+
 html, body {
   height: 100%;
   margin: 0;
@@ -94,7 +103,6 @@ html, body {
   box-sizing: border-box;
 }
 
-.pd-control.collapsed .pd-list{ display:none; }
 /* Buttons (smaller so 3 fit easily) */
 .pd-control button,
 .zone-control button,
