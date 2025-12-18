@@ -211,18 +211,23 @@ fetch(PD_URL)
     const pdIndex = [];
 
     function pdKeyFromProps(p) {
-      return String(
-        p?.PD_KEY ?? p?.pd_key ?? p?.PD ?? p?.pd ?? p?.id ?? p?.ID ?? p?.Name ?? p?.name ?? ''
-      ).trim();
+      // Robust key extraction (matches the original data / older stable code)
+      const cand =
+        p?.PD_no ?? p?.pd_no ?? p?.PDID ?? p?.PD_ID ?? p?.PD ?? p?.pd ??
+        p?.PD_NAME ?? p?.PD_name ?? p?.PD_name ?? null;
+      if (cand != null) return String(cand).trim();
+      return String(p?.PD_name || p?.PD_NAME || p?.name || 'PD').trim();
     }
 
     function pdNameFromProps(p) {
-      return String(
-        p?.PD_NAME ?? p?.pd_name ?? p?.NAME ?? p?.name ?? p?.Name ?? pdKeyFromProps(p)
-      ).trim();
+      // Human-readable label for list + on-map names
+      const cand =
+        p?.PD_name ?? p?.PD_name ?? p?.PD_NAME ?? p?.name ?? p?.Name ??
+        p?.PD_no ?? p?.pd_no ?? null;
+      if (cand != null) return String(cand).trim();
+      return pdKeyFromProps(p);
     }
-
-    function pdNoFromName(name) {
+function pdNoFromName(name) {
       // If PD names start with a number ("1 Something"), capture it; else null.
       const m = String(name || '').trim().match(/^(\d+)\b/);
       return m ? Number(m[1]) : null;
