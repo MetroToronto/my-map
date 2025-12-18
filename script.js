@@ -159,7 +159,7 @@
   const pdGroup = L.layerGroup().addTo(map);
   const pdLabelGroup = L.layerGroup().addTo(map);
 
-  const PD_LABEL_MIN_ZOOM = 10;        // show labels when closer         // show labels when closer
+  const PD_LABEL_MIN_ZOOM = 11;        // show labels when closer         // show labels when closer
   const PD_LABEL_MAX_FS   = 18;
   const PD_LABEL_MIN_FS   = 11;
 
@@ -355,13 +355,35 @@ if (!show || hideBecauseZones) {
           handlePDClick(key, additive);
         };
 
-        cbx.addEventListener('click', (ev) => {
-          // Prevent double-trigger (checkbox click also bubbles to row)
-          ev.preventDefault();
+        cbx.addEventListener('change', (ev) => {
+          // Checkbox should feel instant; replicate ctrl/cmd add/remove from the map.
           ev.stopPropagation();
-          clickHandler(ev);
+          const additive = !!(ev.ctrlKey || ev.metaKey);
+          const checked = !!cbx.checked;
+
+          if (additive) {
+            // Toggle this PD only
+            setPDSelected(key, checked);
+            if (checked) selectedPDs.add(key);
+            else selectedPDs.delete(key);
+          } else {
+            if (checked) {
+              // Single-select
+              clearAllPDSelection(true);
+              setPDSelected(key, true);
+              selectedPDs.add(key);
+            } else {
+              // Uncheck only this PD (do not force clear others)
+              setPDSelected(key, false);
+              selectedPDs.delete(key);
+            }
+          }
+          scheduleLabelUpdate();
         });
-        nameEl.addEventListener('click', clickHandler);
+
+        // Clicking the name/row selects (supports ctrl/cmd add/remove)
+        cbx.addEventListener('click', (ev) => { ev.stopPropagation(); });
+nameEl.addEventListener('click', clickHandler);
         row.addEventListener('click', (ev) => {
           // Clicking empty space in row should also select
           if (ev.target && (ev.target.classList.contains('pd-route-count') || ev.target.classList.contains('pd-cbx'))) return;
@@ -434,11 +456,21 @@ if (!show || hideBecauseZones) {
 
           // Map click selection (paused if zones engaged)
           layer.on('click', (ev) => {
-            if (zonesEngaged) return;
             const additive = !!(ev.originalEvent && (ev.originalEvent.ctrlKey || ev.originalEvent.metaKey));
+
+            if (zonesEngaged) {
+              // In zone mode: PD clicking does NOT select PDs.
+              // Instead, show zones for that PD and clear any PD selections (map + list).
+              clearAllPDSelection(true);
+              showZonesForPD(key);
+              // Hide label for this PD while its zones are visible (handled by scheduleLabelUpdate)
+              scheduleLabelUpdate();
+              return;
+            }
+
             handlePDClick(key, additive);
           });
-        }
+}
       });
 
       buildPDControl(pdFeaturesInOrder);
@@ -672,6 +704,8 @@ if (!show || hideBecauseZones) {
   }
 
   function showZonesForPD(pdKey) {
+    if (!zonesEngaged) return;
+    clearZonesView();
     if (!zonesEngaged) return;
 
     const key = String(pdKey);
