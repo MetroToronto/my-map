@@ -159,7 +159,7 @@
   const pdGroup = L.layerGroup().addTo(map);
   const pdLabelGroup = L.layerGroup().addTo(map);
 
-  const PD_LABEL_MIN_ZOOM = 12;        // show labels when closer         // show labels when closer
+  const PD_LABEL_MIN_ZOOM = 11;        // show labels when closer         // show labels when closer
   const PD_LABEL_MAX_FS   = 18;
   const PD_LABEL_MIN_FS   = 11;
 
@@ -448,7 +448,6 @@ nameEl.addEventListener('click', clickHandler);
             if (zonesEngaged) {
               // In zone mode: PD clicking does NOT select PDs.
               // Instead, show zones for that PD and clear any PD selections (map + list).
-              clearAllPDSelection(true);
               showZonesForPD(key);
               // Hide label for this PD while its zones are visible (handled by scheduleLabelUpdate)
               scheduleLabelUpdate();
@@ -463,6 +462,10 @@ nameEl.addEventListener('click', clickHandler);
       buildPDControl(pdFeaturesInOrder);
 
       map.on('zoomend', () => {
+        scheduleLabelUpdate();
+        updatePZLabels();
+      });
+      map.on('zoom', () => {
         scheduleLabelUpdate();
         updatePZLabels();
       });
@@ -698,8 +701,7 @@ nameEl.addEventListener('click', clickHandler);
     const key = String(pdKey);
     activeZonePDKey = key;
 
-    // Clear PD selections when user enters "zone browsing" by clicking a PD on the map
-    clearAllPDSelection(true);
+    // NOTE: In zone mode, browsing zones should NOT change PD selection.
 
     // Rebuild the zone layer only for this PD
     zoneGroup.clearLayers();
@@ -746,8 +748,9 @@ nameEl.addEventListener('click', clickHandler);
 
     currentZonesLayer.addTo(zoneGroup);
 
-    // Hide the PD label for this PD while zones are visible
+    // Ensure labels refresh immediately
     scheduleLabelUpdate();
+    updatePZLabels();
   }
 
 
