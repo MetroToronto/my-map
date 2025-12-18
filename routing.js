@@ -233,13 +233,10 @@
       }
 
       if (S.minuteCount >= MAX_PER_MINUTE) {
-        const resetAt = S.minuteStartMs + 60_000;
-        const waitMs  = Math.max(0, resetAt - now);
-        if (waitMs > 0) {
-          showRateWaitOverlay(waitMs);
-          await sleep(waitMs);
-          hideRateWaitOverlay();
-        }
+        const waitMs = 60_000;
+        showRateWaitOverlay(waitMs);
+        await sleep(waitMs);
+        hideRateWaitOverlay();
         S.minuteStartMs = Date.now();
         S.minuteCount   = 0;
       }
@@ -253,64 +250,85 @@
   async function orsFetch(path, { method = 'GET', body } = {}, attempt = 0) {
     const url = new URL(ORS_BASE + path);
 
-    let res;
-    try {
-      res = await fetch(url.toString(), {
-        method,
-        headers: {
-          Authorization: currentKey(),
-          ...(method !== 'GET' && { 'Content-Type': 'application/json' })
-        },
-        body: method === 'GET' ? undefined : JSON.stringify(body)
-      });
-    } catch (e) {
-      // Network / CORS / transient failure (“Failed to fetch”, etc.)
-      if (attempt < 2) {
-        const waitMs = 10_000 * (attempt + 1); // 10s, then 20s
-        showRateWaitOverlay(waitMs);
-        await sleep(waitMs);
-        hideRateWaitOverlay();
-        return orsFetch(path, { method, body }, attempt + 1);
-      }
-      throw new Error(e && e.message ? e.message : 'Failed to fetch');
-    }
+    // This function is used deep inside long batch runs (PD trips / PZ trips).
+    // We intentionally tolerate repeated 429s by pausing for a full 60 seconds
+    // and then continuing, so large runs (>80 routes) can finish.
+    let tries = attempt;
+    const MAX_TRIES = 12;
 
-    // 429 Too Many Requests
-    if (res.status === 429) {
-      // If we have multiple keys, rotate
-      if (rotateKey()) {
-        await sleep(150);
-        return orsFetch(path, { method, body }, attempt + 1);
+    while (true) {
+      let res;
+      try {
+        res = await fetch(url.toString(), {
+          method,
+          headers: {
+            Authorization: currentKey(),
+            ...(method !== 'GET' && { 'Content-Type': 'application/json' })
+          },
+          body: method === 'GET' ? undefined : JSON.stringify(body)
+        });
+      } catch (e) {
+        // Network / CORS / transient failure (“Failed to fetch”, etc.)
+        if (tries < MAX_TRIES) {
+          const waitMs = 10_000 * Math.min(6, tries + 1); // 10s, 20s, ..., 60s
+          showRateWaitOverlay(waitMs);
+          await sleep(waitMs);
+          hideRateWaitOverlay();
+          tries += 1;
+          continue;
+        }
+        throw new Error(e && e.message ? e.message : 'Failed to fetch');
       }
-      // Single key: honour Retry-After or wait ~60s
-      if (attempt < 2) {
+
+      // 429 Too Many Requests
+      if (res.status === 429) {
+        // If we have multiple keys, rotate
+        if (rotateKey()) {
+          await sleep(150);
+          tries += 1;
+          continue;
+        }
+
+        // Single key: honour Retry-After but ALWAYS wait at least 60s
         let waitMs = 60_000;
         const retryAfter = res.headers.get('retry-after');
         if (retryAfter) {
           const parsed = parseInt(retryAfter, 10);
           if (!Number.isNaN(parsed) && parsed >= 0) {
-            waitMs = parsed * 1000;
+            waitMs = Math.max(waitMs, parsed * 1000);
           }
         }
+
         showRateWaitOverlay(waitMs);
         await sleep(waitMs);
         hideRateWaitOverlay();
-        return orsFetch(path, { method, body }, attempt + 1);
+
+        // Reset local limiter window so the next requests don't immediately trip again.
+        S.minuteStartMs = Date.now();
+        S.minuteCount   = 0;
+
+        tries += 1;
+        if (tries > MAX_TRIES) {
+          const txt = await res.text().catch(() => res.statusText);
+          throw new Error(`ORS 429 after repeated waits: ${txt}`);
+        }
+        continue;
       }
-    }
 
-    // 401/403 with multiple keys → rotate and retry
-    if ([401, 403].includes(res.status) && rotateKey()) {
-      await sleep(150);
-      return orsFetch(path, { method, body }, attempt + 1);
-    }
+      // 401/403 with multiple keys → rotate and retry
+      if ([401, 403].includes(res.status) && rotateKey()) {
+        await sleep(150);
+        tries += 1;
+        continue;
+      }
 
-    if (!res.ok) {
-      const txt = await res.text().catch(() => res.statusText);
-      throw new Error(`ORS ${res.status}: ${txt}`);
-    }
+      if (!res.ok) {
+        const txt = await res.text().catch(() => res.statusText);
+        throw new Error(`ORS ${res.status}: ${txt}`);
+      }
 
-    return res.json();
+      return res.json();
+    }
   }
 
   // ===== Directions wrapper =====
