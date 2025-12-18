@@ -57,7 +57,9 @@
   }
 
   function zoneKeyFromProps(p) {
+    // Traffic Zone id in your data is `TTS2022`
     const cand =
+      p?.TTS2022 ?? p?.tts2022 ??
       p?.ZONE ?? p?.Zone ?? p?.zone ?? p?.ZONE_NO ?? p?.zone_no ??
       p?.TAZ ?? p?.taz ?? p?.PZ ?? p?.pz ??
       p?.TZ ?? p?.tz ?? p?.id ?? p?.ID ?? null;
@@ -224,7 +226,7 @@ if (!show || hideBecauseZones) {
       icon: L.divIcon({
         className: '',
         html: `<div class="map-label pd-label" data-pd="${encodeURIComponent(key)}">${name}</div>`,
-        iconSize: [0, 0]
+        iconSize: [1, 1]
       })
     });
     marker.addTo(pdLabelGroup);
@@ -581,7 +583,7 @@ nameEl.addEventListener('click', clickHandler);
     fillOpacity: 0.10
   };
 
-  const PZ_LABEL_MIN_ZOOM = 12;
+  const PZ_LABEL_MIN_ZOOM = 10;
   const PZ_LABEL_MIN_FS   = 10;
   const PZ_LABEL_MAX_FS   = 15;
 
@@ -727,21 +729,22 @@ nameEl.addEventListener('click', clickHandler);
 
         // Create a label marker for this zone (centered)
         const zKey = zoneKeyFromProps(feature.properties || {});
-        let c = null;
+        const zKeySafe = (zKey && String(zKey).trim()) ? String(zKey).trim() : '?';
+let c = null;
         try {
           if (layer.getBounds) c = layer.getBounds().getCenter();
         } catch {}
-        if (c && !pzLabelMarkers.has(zKey)) {
+        if (c && !pzLabelMarkers.has(zKeySafe)) {
           const marker = L.marker(c, {
             interactive: false,
             keyboard: false,
             icon: L.divIcon({
               className: '',
-              html: `<div class="map-label pz-label" data-pz="${encodeURIComponent(zKey)}">${zKey}</div>`,
+              html: `<div class="map-label pz-label" data-pz="${encodeURIComponent(zKeySafe)}">TZ ${zKeySafe}</div>`,
               iconSize: [0, 0]
             })
           }).addTo(pzLabelGroup);
-          pzLabelMarkers.set(zKey, marker);
+          pzLabelMarkers.set(zKeySafe, marker);
         }
       }
     });
