@@ -360,61 +360,107 @@
   }
 
   
-  function applyAvoidPreferences(json, prefs) {
+  
+function normalizeStreetName(str) {
+    if (!str) return '';
+    let s = String(str).toUpperCase();
+    s = s.replace(/[\.,]/g, ' ');
+    s = s.replace(/\bSTREET\b/g, 'ST');
+    s = s.replace(/\bST\.?\b/g, 'ST');
+    s = s.replace(/\bROAD\b/g, 'RD');
+    s = s.replace(/\bRD\.?\b/g, 'RD');
+    s = s.replace(/\bAVENUE\b/g, 'AVE');
+    s = s.replace(/\bAVE\.?\b/g, 'AVE');
+    s = s.replace(/\bBOULEVARD\b/g, 'BLVD');
+    s = s.replace(/\bDRIVE\b/g, 'DR');
+    s = s.replace(/\bDR\.?\b/g, 'DR');
+    s = s.replace(/\bHIGHWAY\b/g, 'HWY');
+    s = s.replace(/\bEXPRESSWAY\b/g, 'EXPY');
+    s = s.replace(/\bPARKWAY\b/g, 'PKWY');
+    s = s.replace(/\bEAST\b/g, 'E');
+    s = s.replace(/\bWEST\b/g, 'W');
+    s = s.replace(/\bNORTH\b/g, 'N');
+    s = s.replace(/\bSOUTH\b/g, 'S');
+    s = s.replace(/\s+/g, ' ');
+    return s.trim();
+}
+
+function nameMatchesAvoidRule(stepName, rule) {
+    if (!rule) return false;
+    const nameNorm = normalizeStreetName(stepName);
+    if (!nameNorm) return false;
+
+    // Special handling for 407 – names might be "ON-407", "HWY 407", "EXPRESS TOLL ROUTE", etc.
+    if (rule.highway407) {
+        if (/\b407\b/.test(nameNorm) || nameNorm.includes('TOLL') || nameNorm.includes('ETR')) {
+            return true;
+        }
+        return false;
+    }
+
+    const targetNorm = normalizeStreetName(rule.name || '');
+    if (!targetNorm) return false;
+
+    // Municipality is mostly for user readability; ORS often omits it.
+    // If it *is* present in the step name, great; otherwise we don't require it.
+    if (rule.muni) {
+        const muniNorm = normalizeStreetName(rule.muni);
+        if (muniNorm && !nameNorm.includes(muniNorm)) {
+            // do nothing – we still allow the match to rely on street tokens
+        }
+    }
+
+    if (nameNorm.includes(targetNorm) || targetNorm.includes(nameNorm)) return true;
+
+    const nameTokens   = nameNorm.split(' ').filter(t => t && t.length > 1);
+    const targetTokens = targetNorm.split(' ').filter(t => t && t.length > 1);
+    if (!nameTokens.length || !targetTokens.length) return false;
+
+    let common = 0;
+    for (const t of targetTokens) {
+        if (nameTokens.includes(t)) common++;
+    }
+    return common >= Math.min(2, targetTokens.length);
+}
+
+function applyAvoidPreferences(json, prefs) {
     if (!prefs || !prefs.hasRules || !json || !Array.isArray(json.features)) return json;
     const rules = prefs.rules || [];
 
-    // Score each feature based on how many "avoid" streets it touches.
     const wrapped = json.features.map((feat, idx) => {
-      let score = 0;
-      const props    = feat.properties || {};
-      const segments = Array.isArray(props.segments) ? props.segments : [];
+        let score = 0;
+        const props    = feat.properties || {};
+        const segments = Array.isArray(props.segments) ? props.segments : [];
 
-      for (const seg of segments) {
-        const steps = Array.isArray(seg.steps) ? seg.steps : [];
-        for (const step of steps) {
-          const rawName = (step.name || '').toString();
-          if (!rawName) continue;
-          const name = rawName.toUpperCase();
+        for (const seg of segments) {
+            const steps = Array.isArray(seg.steps) ? seg.steps : [];
+            for (const step of steps) {
+                const rawName = (step.name || '').toString();
+                if (!rawName) continue;
 
-          for (const rule of rules) {
-            if (!rule) continue;
-
-            // Special handling for the 407 checkbox – any step name
-            // containing "407" counts strongly against this alternative.
-            if (rule.highway407) {
-              if (name.includes('407')) score += 2;
-              continue;
+                for (const rule of rules) {
+                    if (nameMatchesAvoidRule(rawName, rule)) {
+                        score += rule.highway407 ? 2 : 1;
+                    }
+                }
             }
-
-            if (!name.includes(rule.name)) continue;
-            if (rule.muni && !name.includes(rule.muni)) continue;
-            score += 1;
-          }
         }
-      }
 
-      return { feat, idx, score };
+        return { feat, idx, score };
     });
 
     if (!wrapped.length) return json;
 
-    // We want to strictly prefer routes with the *lowest* score.
     wrapped.sort((a, b) => {
-      if (a.score !== b.score) return a.score - b.score;
-      return a.idx - b.idx;
+        if (a.score !== b.score) return a.score - b.score;
+        return a.idx - b.idx;
     });
 
     const bestScore = wrapped[0].score;
-
-    // Keep only routes whose score is equal to the minimum.
-    // This means: if there is at least one route that fully avoids
-    // the restricted streets (score 0), we drop all routes that use them.
-    const filtered = wrapped.filter(w => w.score === bestScore);
-
-    json.features = filtered.map(w => w.feat);
+    const filtered  = wrapped.filter(w => w.score === bestScore);
+    json.features   = filtered.map(w => w.feat);
     return json;
-  }
+}
 
 function routeTouchesLayer(geojson, layer) {
     if (!layer || !geojson || !Array.isArray(geojson.features) || !geojson.features[0]) return true;
@@ -449,6 +495,11 @@ function routeTouchesLayer(geojson, layer) {
       elevation: false,
       units: 'km'
     };
+    if (avoidPrefs && avoidPrefs.avoid407) {
+      baseBody.options = baseBody.options || {};
+      baseBody.options.avoid_features = ['tollways'];
+    }
+
 
     const altCount = Math.min(Math.max(1, maxCount), 3);
     if (maxCount > 1 || needAltsForAvoid) {
