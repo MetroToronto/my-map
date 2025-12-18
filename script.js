@@ -252,27 +252,27 @@ fetch(PD_URL)
     const btnAll     = document.getElementById('pd-select-all');
     const btnClr     = document.getElementById('pd-clear-all');
     const btnToggle  = document.getElementById('pd-toggle');
-    const controlDiv = listEl.closest('.pd-control');
+    const controlDiv = listEl ? listEl.closest('.pd-control') : null;
 
-    // Prevent mousewheel over the PD control (including the header/buttons)
-    // from zooming the map. If the wheel happens over the header/buttons,
-    // manually scroll the PD list so it still feels natural.
-    if (controlDiv && L && L.DomEvent && L.DomEvent.disableScrollPropagation) {
+    // Prevent mouse wheel inside the PD control (including the Collapse/Expand button area)
+    // from zooming the map. The list itself still scrolls normally.
+    if (controlDiv && typeof L !== 'undefined' && L.DomEvent && L.DomEvent.disableScrollPropagation) {
       L.DomEvent.disableScrollPropagation(controlDiv);
+      if (listEl) L.DomEvent.disableScrollPropagation(listEl);
     }
-    if (listEl && controlDiv) {
+
+    // If the cursor is over the PD header/buttons (not inside the scrollable list),
+    // forward the wheel to the PD list so you can still scroll PDs without zooming the map.
+    if (controlDiv && listEl) {
       controlDiv.addEventListener('wheel', (e) => {
-        // If the wheel is already over the scrollable list itself, let the list handle it.
-        if (e.target && typeof e.target.closest === 'function' && e.target.closest('#pd-list')) return;
-
-        // Only hijack scrolling if the PD list can actually scroll.
-        if (listEl.scrollHeight <= listEl.clientHeight) return;
-
-        listEl.scrollTop += e.deltaY;
-        e.preventDefault();
+        try {
+          if (e.target && listEl.contains(e.target)) return; // native list scroll
+          listEl.scrollBy({ top: e.deltaY, left: 0, behavior: 'auto' });
+          e.preventDefault();
+          e.stopPropagation();
+        } catch (_) {}
       }, { passive: false });
     }
-
 
     // Show all PDs initially + fit
     pdIndex.forEach(show);
