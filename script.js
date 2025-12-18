@@ -33,6 +33,63 @@ try {
   });
 
   map.addControl(new LogoControl());
+
+  // --- Auto-hide logo if it overlaps other controls (e.g., when PD list expands) ---
+  const _logoEl = document.querySelector('.logo-control');
+  function _rectsOverlap(a, b) {
+    return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+  }
+
+  function _updateLogoVisibility() {
+    if (!_logoEl) return;
+    // Only consider visible logo
+    _logoEl.style.visibility = 'hidden'; // measure without flashing
+    const logoRect = _logoEl.getBoundingClientRect();
+    _logoEl.style.visibility = '';
+
+    // If logo is not in DOM or has 0 size, keep it visible (nothing to do)
+    if (logoRect.width === 0 || logoRect.height === 0) {
+      _logoEl.style.display = '';
+      return;
+    }
+
+    // Compare against the left-column controls (top-left stack)
+    const leftStack = document.querySelectorAll('.leaflet-top.leaflet-left .leaflet-control');
+    let conflict = false;
+    leftStack.forEach(el => {
+      if (conflict) return;
+      if (!el || el === _logoEl) return;
+      const r = el.getBoundingClientRect();
+      // ignore offscreen / zero-size
+      if (r.width === 0 || r.height === 0) return;
+      if (_rectsOverlap(logoRect, r)) conflict = true;
+    });
+
+    _logoEl.style.display = conflict ? 'none' : '';
+  }
+
+  // Run after layout changes
+  const _scheduleLogoCheck = (() => {
+    let t = null;
+    return () => {
+      if (t) cancelAnimationFrame(t);
+      t = requestAnimationFrame(() => {
+        _updateLogoVisibility();
+      });
+    };
+  })();
+
+  // Watch for control layout changes (expand/collapse, etc.)
+  const _ctrlContainer = document.querySelector('.leaflet-control-container');
+  if (_ctrlContainer && window.MutationObserver) {
+    const obs = new MutationObserver(_scheduleLogoCheck);
+    obs.observe(_ctrlContainer, { childList: true, subtree: true, attributes: true });
+  }
+
+  window.addEventListener('resize', _scheduleLogoCheck);
+  // initial check
+  setTimeout(_scheduleLogoCheck, 50);
+
 } catch (e) {
   console.warn('Logo control failed to load:', e);
 }
