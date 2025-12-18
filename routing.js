@@ -314,176 +314,147 @@
   }
 
   // ===== Directions wrapper =====
-  // ---- Avoid-routes helpers ----
-  function parseAvoidRules(raw) {
-    const rules = [];
-    if (!raw) return rules;
-    for (let part of raw.split(';')) {
-      part = String(part).trim();
-      if (!part) continue;
+  
+  // ===== Geometry helpers (PD fallback) =====
+  function _flattenLatLngs(latlngs) {
+    // Returns array of polygons, where each polygon is [outerRing, ...holes]
+    // Each ring is [[lng,lat], ...]
+    if (!Array.isArray(latlngs) || !latlngs.length) return [];
+    const isLatLng = (p) => p && typeof p.lat === 'number' && typeof p.lng === 'number';
+    const toRing = (ring) => ring.map(p => [p.lng, p.lat]);
 
-      // Strip any From:/To: details – for now we only use the main street name + optional municipality.
-      const lower = part.toLowerCase();
-      const fromIdx = lower.indexOf('from:');
-      if (fromIdx > 0) {
-        part = part.slice(0, fromIdx).trim();
+    // Polygon: [LatLng, LatLng, ...] OR [[LatLng...], [hole...]]
+    if (isLatLng(latlngs[0])) {
+      return [[[toRing(latlngs)]]].map(x=>x[0]); // [[outer]]
+    }
+    // Polygon with rings: [[LatLng...], [hole...]]
+    if (Array.isArray(latlngs[0]) && latlngs[0].length && isLatLng(latlngs[0][0])) {
+      return [latlngs.map(toRing)];
+    }
+    // MultiPolygon: [[[LatLng...], ...], ...]
+    if (Array.isArray(latlngs[0]) && Array.isArray(latlngs[0][0])) {
+      const polys = [];
+      for (const poly of latlngs) {
+        if (Array.isArray(poly) && poly.length) {
+          // poly is rings
+          if (poly[0] && poly[0].length && isLatLng(poly[0][0])) polys.push(poly.map(toRing));
+          // poly is nested one more level
+          else if (Array.isArray(poly[0]) && Array.isArray(poly[0][0]) && isLatLng(poly[0][0][0])) {
+            for (const p2 of poly) polys.push(p2.map(toRing));
+          }
+        }
       }
-      part = part.replace(/,+$/, '').trim();
-
-      const m = part.match(/^(.*?)(?:\(([^)]+)\))?$/);
-      const street = (m && m[1] ? m[1].trim() : '');
-      const muni   = (m && m[2] ? m[2].trim() : '');
-      if (!street) continue;
-
-      rules.push({
-        name: street.toUpperCase(),
-        muni: muni ? muni.toUpperCase() : null
-      });
+      return polys;
     }
-    return rules;
+    return [];
   }
 
-  function getAvoidPreferences() {
-    const txtEl  = byId('rt-avoid-text');
-    const chk407 = byId('rt-avoid-407');
-
-    const rules = parseAvoidRules(txtEl ? txtEl.value : '');
-    const prefs = { rules, hasRules: rules.length > 0, avoid407: false };
-
-    if (chk407 && chk407.checked) {
-      prefs.avoid407 = true;
-      // We treat 407 as a special rule – score it a bit higher so it is strongly avoided.
-      rules.push({ name: '407', muni: null, highway407: true });
+  function _pointInRing(pt, ring) {
+    // Ray casting, pt = [lng,lat]
+    const x = pt[0], y = pt[1];
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const xi = ring[i][0], yi = ring[i][1];
+      const xj = ring[j][0], yj = ring[j][1];
+      const intersect = ((yi > y) !== (yj > y)) &&
+                        (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-12) + xi);
+      if (intersect) inside = !inside;
     }
-    prefs.hasRules = rules.length > 0;
-    return prefs;
+    return inside;
   }
 
-  
-  
-function normalizeStreetName(str) {
-    if (!str) return '';
-    let s = String(str).toUpperCase();
-    s = s.replace(/[\.,]/g, ' ');
-    s = s.replace(/\bSTREET\b/g, 'ST');
-    s = s.replace(/\bST\.?\b/g, 'ST');
-    s = s.replace(/\bROAD\b/g, 'RD');
-    s = s.replace(/\bRD\.?\b/g, 'RD');
-    s = s.replace(/\bAVENUE\b/g, 'AVE');
-    s = s.replace(/\bAVE\.?\b/g, 'AVE');
-    s = s.replace(/\bBOULEVARD\b/g, 'BLVD');
-    s = s.replace(/\bDRIVE\b/g, 'DR');
-    s = s.replace(/\bDR\.?\b/g, 'DR');
-    s = s.replace(/\bHIGHWAY\b/g, 'HWY');
-    s = s.replace(/\bEXPRESSWAY\b/g, 'EXPY');
-    s = s.replace(/\bPARKWAY\b/g, 'PKWY');
-    s = s.replace(/\bEAST\b/g, 'E');
-    s = s.replace(/\bWEST\b/g, 'W');
-    s = s.replace(/\bNORTH\b/g, 'N');
-    s = s.replace(/\bSOUTH\b/g, 'S');
-    s = s.replace(/\s+/g, ' ');
-    return s.trim();
-}
-
-function nameMatchesAvoidRule(stepName, rule) {
-    if (!rule) return false;
-    const nameNorm = normalizeStreetName(stepName);
-    if (!nameNorm) return false;
-
-    // Special handling for 407 – names might be "ON-407", "HWY 407", "EXPRESS TOLL ROUTE", etc.
-    if (rule.highway407) {
-        if (/\b407\b/.test(nameNorm) || nameNorm.includes('TOLL') || nameNorm.includes('ETR')) {
-            return true;
-        }
-        return false;
+  function _pointInPoly(pt, poly) {
+    // poly = [outerRing, ...holes]
+    if (!poly || !poly.length) return false;
+    const outer = poly[0];
+    if (!_pointInRing(pt, outer)) return false;
+    for (let h = 1; h < poly.length; h++) {
+      if (_pointInRing(pt, poly[h])) return false; // inside a hole
     }
+    return true;
+  }
 
-    const targetNorm = normalizeStreetName(rule.name || '');
-    if (!targetNorm) return false;
-
-    // Municipality is mostly for user readability; ORS often omits it.
-    // If it *is* present in the step name, great; otherwise we don't require it.
-    if (rule.muni) {
-        const muniNorm = normalizeStreetName(rule.muni);
-        if (muniNorm && !nameNorm.includes(muniNorm)) {
-            // do nothing – we still allow the match to rely on street tokens
-        }
-    }
-
-    if (nameNorm.includes(targetNorm) || targetNorm.includes(nameNorm)) return true;
-
-    const nameTokens   = nameNorm.split(' ').filter(t => t && t.length > 1);
-    const targetTokens = targetNorm.split(' ').filter(t => t && t.length > 1);
-    if (!nameTokens.length || !targetTokens.length) return false;
-
-    let common = 0;
-    for (const t of targetTokens) {
-        if (nameTokens.includes(t)) common++;
-    }
-    return common >= Math.min(2, targetTokens.length);
-}
-
-function applyAvoidPreferences(json, prefs) {
-    if (!prefs || !prefs.hasRules || !json || !Array.isArray(json.features)) return json;
-    const rules = prefs.rules || [];
-
-    const wrapped = json.features.map((feat, idx) => {
-        let score = 0;
-        const props    = feat.properties || {};
-        const segments = Array.isArray(props.segments) ? props.segments : [];
-
-        for (const seg of segments) {
-            const steps = Array.isArray(seg.steps) ? seg.steps : [];
-            for (const step of steps) {
-                const rawName = (step.name || '').toString();
-                if (!rawName) continue;
-
-                for (const rule of rules) {
-                    if (nameMatchesAvoidRule(rawName, rule)) {
-                        score += rule.highway407 ? 2 : 1;
-                    }
-                }
-            }
-        }
-
-        return { feat, idx, score };
-    });
-
-    if (!wrapped.length) return json;
-
-    wrapped.sort((a, b) => {
-        if (a.score !== b.score) return a.score - b.score;
-        return a.idx - b.idx;
-    });
-
-    const bestScore = wrapped[0].score;
-    const filtered  = wrapped.filter(w => w.score === bestScore);
-    json.features   = filtered.map(w => w.feat);
-    return json;
-}
-
-function routeTouchesLayer(geojson, layer) {
-    if (!layer || !geojson || !Array.isArray(geojson.features) || !geojson.features[0]) return true;
-    const feat = geojson.features[0];
-    if (!feat.geometry || feat.geometry.type !== 'LineString' || !Array.isArray(feat.geometry.coordinates)) return true;
-
-    const bounds = layer.getBounds ? layer.getBounds() : null;
-    if (!bounds) return true;
-
-    for (const coord of feat.geometry.coordinates) {
-      if (!coord || coord.length < 2) continue;
-      const latlng = L.latLng(coord[1], coord[0]);
-      if (bounds.contains(latlng)) return true;
+  function pointInLayer(lon, lat, layer) {
+    if (!layer || typeof layer.getLatLngs !== 'function') return false;
+    const polys = _flattenLatLngs(layer.getLatLngs());
+    const pt = [lon, lat];
+    for (const poly of polys) {
+      if (_pointInPoly(pt, poly)) return true;
     }
     return false;
   }
 
-  async function getRoutes(originLonLat, destLonLat, maxCount, options = {}) {
+  function lastCoordFromGeojson(json) {
+    const feat = json && Array.isArray(json.features) ? json.features[0] : null;
+    const coords = feat && feat.geometry && Array.isArray(feat.geometry.coordinates) ? feat.geometry.coordinates : [];
+    return coords.length ? coords[coords.length - 1] : null; // [lng,lat]
+  }
+
+  // For PD/zone checks we don't care whether it's the start or end of the route;
+  // we just need the route to at least pass through the polygon somewhere.
+  function endsInsideLayer(json, layer) {
+    if (!layer) return false;
+    const feat = json && Array.isArray(json.features) ? json.features[0] : null;
+    const coords = feat && feat.geometry && Array.isArray(feat.geometry.coordinates)
+      ? feat.geometry.coordinates
+      : [];
+
+    if (!coords.length) return false;
+
+    // Sample along the line (up to ~50 checks) to see if any point falls inside.
+    const step = Math.max(1, Math.floor(coords.length / 50));
+    for (let i = 0; i < coords.length; i += step) {
+      const c = coords[i];
+      if (pointInLayer(c[0], c[1], layer)) return true;
+    }
+
+    // Also check the final coordinate as a fallback.
+    const last = coords[coords.length - 1];
+    return pointInLayer(last[0], last[1], layer);
+  }
+
+  function candidatePointsInLayer(layer, maxPts = 16) {
+    if (!layer || typeof layer.getBounds !== 'function') return [];
+    const b = layer.getBounds();
+    const south = b.getSouth(), north = b.getNorth(), west = b.getWest(), east = b.getEast();
+    const latSpan = (north - south) || 0;
+    const lngSpan = (east - west) || 0;
+    const padLat = latSpan * 0.12;
+    const padLng = lngSpan * 0.12;
+
+    const s = south + padLat, n = north - padLat, w = west + padLng, e = east - padLng;
+    const pts = [];
+    for (let iy = 0; iy < 5; iy++) {
+      const lat = s + (n - s) * (iy / 4);
+      for (let ix = 0; ix < 5; ix++) {
+        const lon = w + (e - w) * (ix / 4);
+        if (pointInLayer(lon, lat, layer)) pts.push([lon, lat]);
+      }
+    }
+    // Put center-first
+    const c = b.getCenter();
+    pts.sort((a, b2) => {
+      const da = (a[0]-c.lng)**2 + (a[1]-c.lat)**2;
+      const db = (b2[0]-c.lng)**2 + (b2[1]-c.lat)**2;
+      return da - db;
+    });
+    // unique-ish
+    const out = [];
+    const seen = new Set();
+    for (const p of pts) {
+      const k = p[0].toFixed(6) + ',' + p[1].toFixed(6);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(p);
+      if (out.length >= maxPts) break;
+    }
+    return out;
+  }
+
+  // ===== Directions wrapper =====
+  async function getRoutes(originLonLat, destLonLat, maxCount, opts = {}) {
     const o = sanitizeLonLat(originLonLat);
     const d = sanitizeLonLat(destLonLat);
-
-    const avoidPrefs = getAvoidPreferences();
-    const needAltsForAvoid = avoidPrefs && avoidPrefs.hasRules;
 
     const baseBody = {
       coordinates: [o, d],
@@ -495,73 +466,70 @@ function routeTouchesLayer(geojson, layer) {
       elevation: false,
       units: 'km'
     };
-    if (avoidPrefs && avoidPrefs.avoid407) {
-      baseBody.options = baseBody.options || {};
-      baseBody.options.avoid_features = ['tollways'];
-    }
-
-
-    const altCount = Math.min(Math.max(1, maxCount), 3);
-    if (maxCount > 1 || needAltsForAvoid) {
+    if (maxCount > 1) {
       baseBody.alternative_routes = {
-        target_count: altCount,
+        target_count: Math.min(Math.max(1, maxCount), 3),
         share_factor: 0.6
       };
     }
 
-    async function attempt(body) {
-      const json = await orsFetch(`/v2/directions/${PROFILE}/geojson`, { method: 'POST', body });
-      return applyAvoidPreferences(json, avoidPrefs);
-    }
+    const layer  = opts.layer || null;
+    const pdSide = (opts.pdSide === 'origin') ? 'origin' : 'dest'; // which end is the PD/zone point
+
+    const doFetch = (body) =>
+      orsFetch(`/v2/directions/${PROFILE}/geojson`, { method: 'POST', body });
+
+    const makeRadiuses = (r) => (pdSide === 'origin' ? [r, 350] : [350, r]);
 
     try {
-      return await attempt(baseBody);
+      return await doFetch(baseBody);
     } catch (e) {
       const msg = String(e.message || '');
 
-      // Special ORS 2010: no routable point within default radius (e.g., PD centroid far from roads).
-      const is2010 = msg.includes('"code":2010') || msg.includes('code":2010') || msg.includes('code:2010');
+      const is2099 = msg.includes('ORS 500') && (msg.includes('"code":2099') || msg.includes('code:2099'));
+      const is2010 = msg.includes('ORS 404') && (
+        msg.includes('"code":2010') ||
+        msg.includes('code:2010') ||
+        msg.includes('Could not find routable point')
+      );
+
+      // 2010: destination/origin isn't close enough to a routable road (centroid in woods/water/etc.)
       if (is2010) {
-        const radiuses = [1000, 3000, 5000, 8000];
-        let lastErr = e;
-        for (const r of radiuses) {
-          const bodyWithRadius = { ...baseBody, radiuses: [r, r] };
+        // 1) Retry by allowing a larger snap radius on the PD-side point
+        for (const r of [1000, 2000, 5000, 8000]) {
           try {
-            const json = await attempt(bodyWithRadius);
-            // If we have a polygon layer, prefer routes whose geometry passes through its bounds.
-            if (!options.layer || routeTouchesLayer(json, options.layer)) {
-              return json;
+            const j = await doFetch({ ...baseBody, radiuses: makeRadiuses(r) });
+            if (!layer || endsInsideLayer(j, layer)) return j;
+          } catch (_) {}
+        }
+
+        // 2) If we have the PD polygon layer, try alternate points INSIDE the polygon
+        if (layer) {
+          const candidates = candidatePointsInLayer(layer, 16);
+          for (const p of candidates) {
+            const coords = (pdSide === 'origin') ? [p, d] : [o, p];
+            for (const r of [2000, 8000]) {
+              try {
+                const j = await doFetch({ ...baseBody, coordinates: coords, radiuses: makeRadiuses(r) });
+                if (endsInsideLayer(j, layer)) return j;
+              } catch (_) {}
             }
-          } catch (e2) {
-            lastErr = e2;
           }
         }
-        throw lastErr;
+
+        // If we get here, we truly couldn't find a routable point close enough.
+        throw e;
       }
 
-      
-      // ORS 2018: "Use normal algorithm with less overhead instead if no alternatives are required"
-      // This typically happens when we requested alternative_routes but the server
-      // cannot provide them for this request. In that case, retry once WITHOUT
-      // alternative_routes and accept the single route that ORS returns.
-      const is2018 = msg.includes('"code":2018') || msg.includes('code":2018') || msg.includes('code:2018');
-      if (is2018 && baseBody.alternative_routes) {
-        const bodyNoAlt = { ...baseBody };
-        delete bodyNoAlt.alternative_routes;
-        return await attempt(bodyNoAlt);
-      }
-
-// ORS 2099 sometimes indicates lon/lat swapped; try swapping destination coords once.
-      const is2099 = msg.includes('ORS 500') && (msg.includes('"code":2099') || msg.includes('code:2099'));
+      // 2099: handle swapped lon/lat fallback (existing behavior)
       if (!is2099) throw e;
       const dSwap = sanitizeLonLat([d[1], d[0]]);
       const bodySwap = { ...baseBody, coordinates: [o, dSwap] };
-      return await attempt(bodySwap);
+      return await doFetch(bodySwap);
     }
   }
 
-
-  // ===== Drawing / state =====
+// ===== Drawing / state =====
   function clearRoutes() {
     if (S.group) {
       try { S.map.removeLayer(S.group); } catch {}
@@ -640,10 +608,10 @@ function routeTouchesLayer(geojson, layer) {
       requests.push({
         key,
         name,
+        layer: reg.layer,
         lon: center.lng,
         lat: center.lat,
-        count,
-        layer: reg.layer
+        count
       });
     }
 
@@ -666,7 +634,8 @@ function routeTouchesLayer(geojson, layer) {
         out.push({
           lon: t[0],
           lat: t[1],
-          label: t[2] || 'Zone'
+          label: t[2] || 'Zone',
+          layer: null
         });
       } else if (typeof t === 'object') {
         const lon = t.lon ?? t.lng ?? t.x ?? (t.center && t.center[0]);
@@ -675,7 +644,8 @@ function routeTouchesLayer(geojson, layer) {
         out.push({
           lon: num(lon),
           lat: num(lat),
-          label: t.label || t.name || 'Zone'
+          label: t.label || t.name || 'Zone',
+          layer: t.layer || t.zoneLayer || null
         });
       }
     }
@@ -787,28 +757,21 @@ function routeTouchesLayer(geojson, layer) {
   }
 
   // ===== Button state =====
-  
   function setBusy(mode, busy) {
     const btnPD    = byId('rt-gen-pd');
     const btnPZ    = byId('rt-gen-pz');
     const btnClear = byId('rt-clear');
 
-    function toggle(btn) {
-      if (!btn) return;
-      if (!btn.dataset.originalLabel) {
-        btn.dataset.originalLabel = btn.textContent;
-      }
-      btn.disabled = busy;
-      btn.textContent = busy
-        ? (btn.dataset.originalLabel || '') + '…'
-        : btn.dataset.originalLabel;
+    if (mode === 'PD' && btnPD) {
+      btnPD.disabled  = busy;
+      btnPD.textContent = busy ? 'PD Trips…' : 'PD Trips';
     }
-
-    if (mode === 'PD') toggle(btnPD);
-    if (mode === 'PZ') toggle(btnPZ);
+    if (mode === 'PZ' && btnPZ) {
+      btnPZ.disabled  = busy;
+      btnPZ.textContent = busy ? 'Zone Trips…' : 'Zone Trips';
+    }
     if (btnClear) btnClear.disabled = busy;
   }
-
 
   // ===== PD trips =====
   async function generateForPDs() {
@@ -833,9 +796,38 @@ function routeTouchesLayer(geojson, layer) {
         const d = reverse ? origin : dest;
 
         await RateLimiter.beforeRequest();
-        const json  = await getRoutes(o, d, req.count, { layer: req.layer });
+        let json;
+        try {
+          json = await getRoutes(o, d, req.count, { layer: req.layer, pdSide: (reverse ? 'origin' : 'dest') });
+        } catch (errOne) {
+          console.warn('PD routing failed for', req?.name || req?.key || 'PD', errOne);
+          S.lastTrips.push({
+            mode: 'PD',
+            key : req.key,
+            name: req.name,
+            reverse,
+            origin: { lon: o[0], lat: o[1], label: (reverse ? req.name : ((global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin')) },
+            destination: { lon: d[0], lat: d[1], label: (reverse ? ((global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin') : req.name) },
+            features: [],
+            error: String(errOne && errOne.message ? errOne.message : errOne)
+          });
+          continue;
+        }
         const feats = Array.isArray(json.features) ? json.features.slice(0, req.count) : [];
-        if (!feats.length) continue;
+        if (!feats.length) {
+          console.warn('No routes returned for', req?.name || req?.key || 'PD');
+          S.lastTrips.push({
+            mode: 'PD',
+            key : req.key,
+            name: req.name,
+            reverse,
+            origin: { lon: o[0], lat: o[1], label: (reverse ? req.name : ((global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin')) },
+            destination: { lon: d[0], lat: d[1], label: (reverse ? ((global.ROUTING_ORIGIN && (global.ROUTING_ORIGIN.label || global.ROUTING_ORIGIN.name)) || 'Origin') : req.name) },
+            features: [],
+            error: 'No routes returned by ORS for this destination.'
+          });
+          continue;
+        }
 
         // sort alternatives by duration then distance
         feats.sort((a, b) => {
@@ -960,12 +952,13 @@ function routeTouchesLayer(geojson, layer) {
       S.lastTrips = [];
 
       for (const t of targets) {
-        const dest = sanitizeLonLat([t.lon, t.lat]);
+        const dest  = sanitizeLonLat([t.lon, t.lat]);
+        const layer = t.layer || null;
         const o = reverse ? dest : origin;
         const d = reverse ? origin : dest;
 
         await RateLimiter.beforeRequest();
-        const json = await getRoutes(o, d, 1);
+        const json = await getRoutes(o, d, 1, { layer, pdSide: (reverse ? 'origin' : 'dest') });
         const feat = Array.isArray(json.features) ? json.features[0] : null;
         if (!feat) continue;
 
@@ -1041,32 +1034,7 @@ function routeTouchesLayer(geojson, layer) {
   }
 
   // ===== Distribute Trips Leaflet control =====
-  
-  const AvoidControl = L.Control.extend({
-    options: { position: 'topleft' },
-    onAdd: function () {
-      const el = L.DomUtil.create('div', 'routing-card');
-      el.style.padding = '10px 12px';
-      el.innerHTML = `
-        <div class="routing-header"><strong>Avoid Routes</strong></div>
-        <div style="margin-top:6px;">
-          <textarea id="rt-avoid-text" rows="2" style="width:100%;resize:vertical;"
-            placeholder="Queen Street West (Toronto);&#10;Queen Street West (Toronto), From: Bathurst Street (Toronto), To: Dufferin Street (Toronto);"></textarea>
-        </div>
-        <div style="margin-top:6px;">
-          <label style="font-size:0.9em;display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input type="checkbox" id="rt-avoid-407">
-            Avoid Highway 407 (Burlington → Brock Rd, Pickering)
-          </label>
-        </div>
-      `;
-      L.DomEvent.disableClickPropagation(el);
-      L.DomEvent.disableScrollPropagation(el);
-      return el;
-    }
-  });
-
-const GeneratorControl = L.Control.extend({
+  const GeneratorControl = L.Control.extend({
     options: { position: 'topleft' },
     onAdd: function () {
       const el = L.DomUtil.create('div', 'routing-control');
@@ -1109,7 +1077,6 @@ const GeneratorControl = L.Control.extend({
     S.map = map;
     hydrateKeys();
     S.group = L.layerGroup().addTo(map);
-    map.addControl(new AvoidControl());
     map.addControl(new GeneratorControl());
     setTimeout(wireControls, 0);
   }
