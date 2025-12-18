@@ -1,12 +1,3 @@
-/* =========================================================
-   style.css (DROP-IN)
-   Fixes:
-   - Removes accidental "..." truncation that breaks CSS parsing
-   - Makes all left-side cards + geocoder the same width
-   - Keeps PD buttons on one row; Zone buttons + Zone # on one row
-   - Smaller overall typography to prevent wrapping
-   ========================================================= */
-
 html, body {
   height: 100%;
   margin: 0;
@@ -62,6 +53,48 @@ html, body {
   flex-wrap: nowrap;           /* keep on one row */
 }
 
+
+/* Scrollable Planning District list (matches original look) */
+.pd-list{
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  max-height: 320px;           /* shows ~10 items, then scroll */
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: #fff;
+  margin-top: 6px;
+  box-sizing: border-box;
+}
+
+/* Each PD row */
+.pd-item{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid rgba(0,0,0,.08);
+}
+.pd-item:last-child{ border-bottom: 0; }
+
+.pd-name{
+  flex: 1 1 auto;
+  user-select: none;
+}
+
+.pd-route-count{
+  width: 44px;
+  height: 28px;
+  border-radius: 12px;
+  border: 1px solid rgba(0,0,0,.2);
+  padding: 0 6px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.pd-control.collapsed .pd-list{ display:none; }
 /* Buttons (smaller so 3 fit easily) */
 .pd-control button,
 .zone-control button,
