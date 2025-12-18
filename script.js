@@ -242,7 +242,10 @@ function pdNoFromName(name) {
         item.layer.setStyle(isSel ? selectedStyle : baseStyle);
         if (isSel) {
           try { item.layer.bringToFront(); } catch {}
-        }
+        
+
+      if (typeof updatePDLabelOcclusion === 'function') updatePDLabelOcclusion();
+    }
       }
     }
 
@@ -289,6 +292,20 @@ function pdNoFromName(name) {
         // Single-select: switch selection to this PD
         setSelectionSingle(key);
       }
+
+      // If zones mode is engaged, show zones for the single selected PD (if exactly one)
+      if (typeof zonesEngaged !== 'undefined' && zonesEngaged) {
+        if (typeof window._zonesShowFor === 'function') {
+          if (selectedKeys.size === 1) {
+            const only = Array.from(selectedKeys)[0];
+            window._zonesShowFor(only);
+          } else if (typeof window._zonesClear === 'function') {
+            window._zonesClear();
+          }
+        }
+        if (typeof updatePDLabelOcclusion === 'function') updatePDLabelOcclusion();
+      }
+    }
     }
 
     // Build GeoJSON layers
@@ -306,6 +323,10 @@ function pdNoFromName(name) {
         pdIndex.push(item);
 
         layer.on('click', (e) => {
+          if (typeof zonesEngaged !== 'undefined' && zonesEngaged) {
+            if (typeof window._zonesShowFor === 'function') window._zonesShowFor(key);
+            return;
+          }
           handlePDUserSelect(key, e.originalEvent);
         });
 
@@ -320,13 +341,8 @@ function pdNoFromName(name) {
     });
 
     pdGeoLayer.addTo(pdGroup);
-
-    // Sort PD list: by number then by name
-    pdIndex.sort((a, b) => {
-      const ah = a.no !== null;
-      const bh = b.no !== null;
-      if (ah && bh) return Number(a.no) - Number(b.no);
-      if (ah && !bh) return -1;
+    // PD list order: keep the same order as the GeoJSON file
+if (ah && !bh) return -1;
       if (!ah && bh) return 1;
       return a.name.localeCompare(b.name, undefined, { numeric: true });
     });
@@ -335,11 +351,14 @@ function pdNoFromName(name) {
     function createPDLabelMarker(item) {
       if (!item?.bounds) return null;
       const center = item.bounds.getCenter();
-      const html = `<div class="pd-name-label">${item.name}</div>`;
+      const safeName = String(item.name || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const safeKey  = String(item.key  || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const html = `<div class="pd-label" data-pdkey="${safeKey}">${safeName}</div>`;
       return L.marker(center, {
         interactive: false,
+        keyboard: false,
         icon: L.divIcon({
-          className: 'pd-name-label-wrap',
+          className: 'pd-label-wrap',
           html,
           iconSize: null
         })
@@ -354,17 +373,54 @@ function pdNoFromName(name) {
       }
     }
 
+    function _clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+
+    function updateLabelScales() {
+      const z = map.getZoom();
+
+      // PD labels: show at PD_LABEL_ZOOM and scale gently with zoom
+      const pdSize = _clamp(11 + (z - PD_LABEL_ZOOM) * 1.0, 11, 16);
+      map.getContainer().style.setProperty('--pd-label-size', pdSize + 'px');
+
+      // Zone labels: show at ZONE_LABEL_ZOOM and scale gently with zoom
+      const zSize = _clamp(10 + (z - ZONE_LABEL_ZOOM) * 0.9, 10, 15);
+      map.getContainer().style.setProperty('--zone-label-size', zSize + 'px');
+    }
+
+    function updatePDLabelOcclusion() {
+      // Hide selected PD labels while zones are engaged (to reduce clutter).
+      if (!pdIndex || !pdIndex.length) return;
+      for (const item of pdIndex) {
+        const el = item.labelMarker?.getElement?.();
+        if (!el) continue;
+        const isSel = selectedKeys?.has?.(item.key);
+        const hide = (typeof zonesEngaged !== 'undefined' && zonesEngaged && isSel);
+        el.classList.toggle('is-hidden', !!hide);
+      }
+    }
+
     function updatePDLabelVisibility() {
       const z = map.getZoom();
       const shouldShow = z >= PD_LABEL_ZOOM;
+
       if (shouldShow) {
         if (!map.hasLayer(pdLabelGroup)) pdLabelGroup.addTo(map);
       } else {
         if (map.hasLayer(pdLabelGroup)) map.removeLayer(pdLabelGroup);
       }
+
+      updateLabelScales();
+      updatePDLabelOcclusion();
+
+      // Keep zone label visibility in sync with zoom too
+      if (typeof updateZoneLabels === 'function') updateZoneLabels();
     }
+
+    // Smooth scaling while zooming; show/hide on zoomend
+    map.on('zoom', updateLabelScales);
     map.on('zoomend', updatePDLabelVisibility);
     updatePDLabelVisibility();
+updatePDLabelVisibility();
 
     // ===== Build PD list UI =====
     const itemsHTML = pdIndex.map(i => `
@@ -652,6 +708,9 @@ fetch(ZONES_URL)
         clearZoneSelection();
         return;
       }
+
+      // Selecting a planning zone clears any PD selection (list + map)
+      if (typeof clearAllPDs === 'function') clearAllPDs();
       if (selectedZoneLayer) selectedZoneLayer.setStyle(zoneBaseStyle);
       selectedZoneLayer = layer;
       layer.setStyle(zoneSelectedStyle);
@@ -671,6 +730,7 @@ fetch(ZONES_URL)
       zonesEngaged = engaged;
       btnEng.classList.toggle('active', engaged);
       btnDis.classList.toggle('active', !engaged);
+      if (typeof updatePDLabelOcclusion === 'function') updatePDLabelOcclusion();
 
       if (!engaged) {
         // Clear zones view
@@ -726,35 +786,19 @@ fetch(ZONES_URL)
         // 2) Label marker (chip)
         const center    = poly.getBounds().getCenter();
         const zName     = zoneKeyFromProps(f.properties || {});
-        const labelHtml = `<span class="zone-tag">${String(zName)}</span>`;
-
-        let labelIcon = L.divIcon({
-          className: 'zone-label',
-          html     : labelHtml,
-          iconSize : null
-        });
+        const labelHtml = `<div class="zone-label"><span class="zone-tag">${String(zName)}</span></div>`;
 
         const labelMarker = L.marker(center, {
-          icon       : labelIcon,
-          riseOnHover: true,
-          zIndexOffset: 1000
-        });
-
-        // Measure chip then center anchor
-        labelMarker.once('add', () => {
-          const el = labelMarker.getElement();
-          if (!el) return;
-          const w = el.offsetWidth  || 24;
-          const h = el.offsetHeight || 16;
-          const centered = L.divIcon({
-            className: 'zone-label',
+          interactive : false,
+          keyboard    : false,
+          riseOnHover : true,
+          zIndexOffset: 1000,
+          icon: L.divIcon({
+            className: 'zone-label-wrap',
             html     : labelHtml,
-            iconSize : [w, h],
-            iconAnchor: [w / 2, h / 2]
-          });
-          labelMarker.setIcon(centered);
+            iconSize : null
+          })
         });
-
         const POPUP_OFFSET_Y = -10;
         labelMarker.on('click', () => {
           const props = f.properties || {};
