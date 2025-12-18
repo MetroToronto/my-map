@@ -159,7 +159,7 @@
   const pdGroup = L.layerGroup().addTo(map);
   const pdLabelGroup = L.layerGroup().addTo(map);
 
-  const PD_LABEL_MIN_ZOOM = 9;         // show labels when closer
+  const PD_LABEL_MIN_ZOOM = 10;        // show labels when closer         // show labels when closer
   const PD_LABEL_MAX_FS   = 18;
   const PD_LABEL_MIN_FS   = 11;
 
@@ -174,6 +174,18 @@
   let pdListEl = null;
   let pdToggleBtn = null;
   let pdControlDiv = null;
+
+
+  // Debounced label updates (prevents lag from repeated DOM work)
+  let _labelRaf = 0;
+  function scheduleLabelUpdate() {
+    if (_labelRaf) cancelAnimationFrame(_labelRaf);
+    _labelRaf = requestAnimationFrame(() => {
+      _labelRaf = 0;
+      scheduleLabelUpdate();
+      updatePZLabels();
+    });
+  }
 
   // Create / update label markers (PDs)
   const pdLabelMarkers = new Map(); // key -> marker
@@ -194,10 +206,9 @@
       const labelEl = el.querySelector('.map-label');
       if (!labelEl) continue;
 
-      // Hide selected PD labels while zones are engaged (to make room)
-      const hideBecauseZones = zonesEngaged && selectedPDs.has(key);
-
-      if (!show || hideBecauseZones) {
+      // Hide the PD label for the PD currently being used to display zones (to make room)
+      const hideBecauseZones = zonesEngaged && activeZonePDKey && String(activeZonePDKey) === String(key);
+if (!show || hideBecauseZones) {
         labelEl.classList.add('is-hidden');
       } else {
         labelEl.classList.remove('is-hidden');
@@ -244,26 +255,33 @@
     // keepBaseLayer is here for readability; base layer always stays on.
     for (const key of Array.from(selectedPDs)) setPDSelected(key, false);
     selectedPDs.clear();
-    updatePDLabels();
+    scheduleLabelUpdate();
   }
 
   function selectAllPDs() {
     for (const key of Object.keys(PD_REGISTRY)) setPDSelected(key, true);
-    updatePDLabels();
+    scheduleLabelUpdate();
   }
 
   function handlePDClick(key, additive) {
     if (!additive) {
-      // single-select: clear others, then select this
+      // single-select behavior:
+      // - if this is the only selected PD already, toggle it OFF (for list checkbox usability)
+      // - otherwise clear others and select this
       const alreadyOnly = (selectedPDs.size === 1 && selectedPDs.has(key));
-      if (!alreadyOnly) clearAllPDSelection(true);
-      setPDSelected(key, true);
+      if (alreadyOnly) {
+        setPDSelected(key, false);
+        selectedPDs.delete(key);
+      } else {
+        clearAllPDSelection(true);
+        setPDSelected(key, true);
+      }
     } else {
       // ctrl/cmd: toggle
       const isSel = selectedPDs.has(key);
       setPDSelected(key, !isSel);
     }
-    updatePDLabels();
+    scheduleLabelUpdate();
   }
 
   function buildPDControl(pdFeaturesInOrder) {
@@ -338,14 +356,15 @@
         };
 
         cbx.addEventListener('click', (ev) => {
-          // Let checkbox reflect the selection state we set
+          // Prevent double-trigger (checkbox click also bubbles to row)
           ev.preventDefault();
+          ev.stopPropagation();
           clickHandler(ev);
         });
         nameEl.addEventListener('click', clickHandler);
         row.addEventListener('click', (ev) => {
           // Clicking empty space in row should also select
-          if (ev.target && (ev.target.classList.contains('pd-route-count'))) return;
+          if (ev.target && (ev.target.classList.contains('pd-route-count') || ev.target.classList.contains('pd-cbx'))) return;
           clickHandler(ev);
         });
       }
@@ -425,10 +444,10 @@
       buildPDControl(pdFeaturesInOrder);
 
       map.on('zoomend', () => {
-        updatePDLabels();
+        scheduleLabelUpdate();
         updatePZLabels();
       });
-      updatePDLabels();
+      scheduleLabelUpdate();
 
       // Provide PD target centers for routing.js (used in some modes)
       // routing.js already reads PD_REGISTRY + DOM, so no extra exports needed.
@@ -540,7 +559,7 @@
     fillOpacity: 0.10
   };
 
-  const PZ_LABEL_MIN_ZOOM = 12;
+  const PZ_LABEL_MIN_ZOOM = 13;
   const PZ_LABEL_MIN_FS   = 10;
   const PZ_LABEL_MAX_FS   = 15;
 
@@ -554,7 +573,7 @@
 
   function updatePZLabels() {
     const z = map.getZoom();
-    const show = zonesEngaged && z >= PZ_LABEL_MIN_ZOOM;
+    const show = zonesEngaged && !!activeZonePDKey && z >= PZ_LABEL_MIN_ZOOM;
 
     for (const [zKey, marker] of pzLabelMarkers.entries()) {
       const el = marker.getElement();
@@ -608,12 +627,15 @@
     // Selecting a zone clears all PD selections (list + map)
     clearAllPDSelection(true);
 
-    updatePDLabels();
+    scheduleLabelUpdate();
     updatePZLabels();
   }
 
   // Map from PD key -> array of zone features inside it (precomputed from properties if available)
   const zonesByKey = new Map(); // pdKey -> features
+  let activeZonePDKey = null;      // PD key currently showing zones for
+  let currentZonesLayer = null;    // L.GeoJSON layer for active PD
+
 
   // Export functions required by routing.js
   window.getZoneTargetsForPD = function (pdKey) {
@@ -636,6 +658,78 @@
     }
     return out;
   };
+
+  function clearZonesView() {
+    activeZonePDKey = null;
+    if (currentZonesLayer) {
+      try { zoneGroup.removeLayer(currentZonesLayer); } catch {}
+      currentZonesLayer = null;
+    }
+    zoneGroup.clearLayers();
+    pzLabelGroup.clearLayers();
+    pzLabelMarkers.clear();
+    clearZoneSelection();
+  }
+
+  function showZonesForPD(pdKey) {
+    if (!zonesEngaged) return;
+
+    const key = String(pdKey);
+    activeZonePDKey = key;
+
+    // Clear PD selections when user enters "zone browsing" by clicking a PD on the map
+    clearAllPDSelection(true);
+
+    // Rebuild the zone layer only for this PD
+    zoneGroup.clearLayers();
+    pzLabelGroup.clearLayers();
+    pzLabelMarkers.clear();
+    clearZoneSelection();
+
+    const feats = zonesByKey.get(key) || [];
+    if (!feats.length) {
+      scheduleLabelUpdate();
+      return;
+    }
+
+    const fc = { type: 'FeatureCollection', features: feats };
+
+    currentZonesLayer = L.geoJSON(fc, {
+      style: ZONE_BASE_STYLE,
+      onEachFeature: (feature, layer) => {
+        layer.on('click', () => {
+          if (!zonesEngaged) return;
+          selectZone(layer);
+        });
+
+        // Create a label marker for this zone (centered)
+        const zKey = zoneKeyFromProps(feature.properties || {});
+        let c = null;
+        try {
+          if (layer.getBounds) c = layer.getBounds().getCenter();
+        } catch {}
+        if (c && !pzLabelMarkers.has(zKey)) {
+          const marker = L.marker(c, {
+            interactive: false,
+            keyboard: false,
+            icon: L.divIcon({
+              className: '',
+              html: `<div class="map-label pz-label" data-pz="${encodeURIComponent(zKey)}">${zKey}</div>`,
+              iconSize: [0, 0]
+            })
+          }).addTo(pzLabelGroup);
+          pzLabelMarkers.set(zKey, marker);
+        }
+      }
+    });
+
+    currentZonesLayer.addTo(zoneGroup);
+
+    // Hide the PD label for this PD while zones are visible
+    scheduleLabelUpdate();
+  }
+
+
 
   window.getSelectedZoneTargets = function () {
     const out = [];
@@ -684,17 +778,15 @@
     if (btnDisengage) btnDisengage.classList.toggle('is-active', !zonesEngaged);
 
     if (zonesEngaged) {
-      // show zones
-      zoneGroup.addTo(map);
-      // Hide selected PD labels while zones engaged
-      updatePDLabels();
-      updatePZLabels();
+      // Engage zone browsing mode (do NOT show zones until a PD is clicked)
+      if (!map.hasLayer(zoneGroup)) zoneGroup.addTo(map);
+      clearZonesView();
+      scheduleLabelUpdate();
     } else {
-      // hide zones and clear selection
+      // Disengage: remove zones & restore PD labels behavior
+      clearZonesView();
       try { map.removeLayer(zoneGroup); } catch {}
-      clearZoneSelection();
-      updatePDLabels();
-      updatePZLabels();
+      scheduleLabelUpdate();
     }
   }
 
@@ -726,6 +818,7 @@
     .then(txt => safeJSONParse(txt, 'Zones GeoJSON'))
     .then(geojson => {
       const feats = Array.isArray(geojson.features) ? geojson.features : [];
+
       // Build zone entries (feature + center + key). We'll spatially assign zones to PDs
       // using zone centers (bounds center) inside PD polygons (with PD bounds prefilter).
       const zoneEntries = [];
@@ -743,46 +836,16 @@
         zoneEntries.push({ feature: f, center: [center.lng, center.lat], zKey });
       }
 
-      // Wait for PDs to be loaded, then build spatial index
+      // Wait for PDs to be loaded, then build index (PD key -> zone features)
       (function waitForPDThenIndex() {
         if (Object.keys(PD_REGISTRY).length) {
           buildZonesByPD(zoneEntries);
+          console.log('Zones loaded:', zoneEntries.length);
+          scheduleLabelUpdate();
         } else {
           setTimeout(waitForPDThenIndex, 120);
         }
       })();
-
-      // Build layer
-
-      L.geoJSON(geojson, {
-        style: ZONE_BASE_STYLE,
-        onEachFeature: (feature, layer) => {
-          layer.addTo(zoneGroup);
-          layer.on('click', () => {
-            if (!zonesEngaged) return;
-            selectZone(layer);
-          });
-
-          // Label marker
-          const props = feature.properties || {};
-          const zKey = zoneKeyFromProps(props);
-          const c = layer.getBounds ? layer.getBounds().getCenter() : null;
-          if (c && !pzLabelMarkers.has(zKey)) {
-            const marker = L.marker(c, {
-              interactive: false,
-              keyboard: false,
-              icon: L.divIcon({
-                className: '',
-                html: `<div class="map-label pz-label" data-pz="${encodeURIComponent(zKey)}">${zKey}</div>`,
-                iconSize: [0, 0]
-              })
-            }).addTo(pzLabelGroup);
-            pzLabelMarkers.set(zKey, marker);
-          }
-        }
-      });
-
-      updatePZLabels();
     })
     .catch(err => {
       console.error('Failed to load zones:', err);
