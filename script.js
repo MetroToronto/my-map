@@ -10,113 +10,6 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap'
 }).addTo(map);
 
-
-// ===================== Company logo (bottom-left) =====================
-try {
-  const LogoControl = L.Control.extend({
-    options: { position: 'bottomleft' },
-    onAdd: function () {
-      const div = L.DomUtil.create('div', 'logo-control');
-      const imgPath = 'data/LEA_logo.png';
-      div.innerHTML = `
-        <div class="logo-inner">
-          <img src="${imgPath}" alt="LEA Consulting" loading="lazy" />
-        </div>
-      `;
-      // Prevent clicks/wheel on the logo card from affecting the map
-      if (L.DomEvent) {
-        L.DomEvent.disableClickPropagation(div);
-        if (L.DomEvent.disableScrollPropagation) L.DomEvent.disableScrollPropagation(div);
-      }
-      return div;
-    }
-  });
-
-  map.addControl(new LogoControl());
-
-  // --- Auto-hide logo if it overlaps other controls (e.g., when PD list expands) ---
-  // Uses a class toggle (no display:none) to avoid flicker and keeps the element measurable.
-  const _logoEl = document.querySelector('.logo-control');
-  let _logoHidden = false;
-
-  function _rectsOverlap(a, b) {
-    return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
-  }
-
-  function _inflateRect(r, pad) {
-    return { left: r.left - pad, top: r.top - pad, right: r.right + pad, bottom: r.bottom + pad };
-  }
-
-  function _setLogoHidden(hidden) {
-    if (!_logoEl) return;
-    const next = !!hidden;
-    if (next === _logoHidden) return; // only change when state changes
-    _logoHidden = next;
-    _logoEl.classList.toggle('is-hidden', _logoHidden);
-  }
-
-  function _updateLogoVisibility() {
-    if (!_logoEl) return;
-
-    const logoRect = _inflateRect(_logoEl.getBoundingClientRect(), 3);
-
-    // If logo has no size yet, keep it visible
-    if (logoRect.right - logoRect.left <= 0 || logoRect.bottom - logoRect.top <= 0) {
-      _setLogoHidden(false);
-      return;
-    }
-
-    // Compare against the left-column controls (top-left stack)
-    const leftStack = document.querySelectorAll('.leaflet-top.leaflet-left .leaflet-control');
-    let conflict = false;
-
-    leftStack.forEach(el => {
-      if (conflict) return;
-      if (!el || el === _logoEl) return;
-
-      const r0 = el.getBoundingClientRect();
-      if (r0.width === 0 || r0.height === 0) return;
-
-      const r = _inflateRect(r0, 2);
-      if (_rectsOverlap(logoRect, r)) conflict = true;
-    });
-
-    _setLogoHidden(conflict);
-  }
-
-  const _scheduleLogoCheck = (() => {
-    let raf = 0;
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        _updateLogoVisibility();
-      });
-    };
-  })();
-
-  // Watch for layout changes (expand/collapse, other controls changing height)
-  const _ctrlContainer = document.querySelector('.leaflet-control-container');
-  if (_ctrlContainer && window.MutationObserver) {
-    const obs = new MutationObserver((mutations) => {
-      // Ignore mutations caused by toggling the logo itself to prevent loops
-      for (const m of mutations) {
-        if (_logoEl && (m.target === _logoEl || (_logoEl.contains && _logoEl.contains(m.target)))) continue;
-        _scheduleLogoCheck();
-        break;
-      }
-    });
-    obs.observe(_ctrlContainer, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
-  }
-
-  window.addEventListener('resize', _scheduleLogoCheck);
-  // Initial check after controls render
-  setTimeout(_scheduleLogoCheck, 100);
-} catch (e) {
-  console.warn('Logo control failed to load:', e);
-}
-
-
 // ===================== Geocoder (search bar) =====================
 // Force the geocoder into the TOP LEFT, so it can sit above the PD/Zone/Trip cards
 try {
@@ -175,74 +68,102 @@ window._zonesClear       = undefined; // () -> void
 const PD_URL = 'data/tts_pds.json?v=' + Date.now();
 
 fetch(PD_URL)
-  .then(r => {
-    if (!r.ok) throw new Error(`HTTP ${r.status} for ${r.url || PD_URL}`);
-    return r.text();
-  })
-  .then(txt => {
-    try {
-      return JSON.parse(txt);
-    } catch (e) {
-      console.error('PD JSON parse error:', e, txt.slice(0, 200));
-      throw new Error('Invalid PD GeoJSON');
-    }
-  })
+  .then(r => r.json())
   .then(geo => {
-    const baseStyle     = { color: '#ff6600', weight: 2, fillOpacity: 0.15 };
-    const selectedStyle = { color: '#d40000', weight: 4, fillOpacity: 0.25 };
-    const PD_LABEL_HIDE_ZOOM = 13;
+    // --- Styles ---
+    // Base: always visible, light orange (NOT the same thing as "selected")
+    const baseStyle     = { color: '#ff8c1a', weight: 2, fillColor: '#ffd1a6', fillOpacity: 0.18 };
+    // Selected: red
+    const selectedStyle = { color: '#d40000', weight: 4, fillColor: '#ff6666', fillOpacity: 0.22 };
+
+    // Show PD names only when zoomed in (to avoid clutter)
+    const PD_LABEL_SHOW_ZOOM = 10;
 
     const group = L.featureGroup().addTo(map);
 
-    let selectedKey  = null;
-    let selectedItem = null;
+    // State: which PDs are selected (checkbox-checked and red on the map)
+    const selectedKeys = new Set();
 
-    // Always-visible PD label when selected
-    const selectedLabel = L.marker([0, 0], { opacity: 0 });
+    const pdIndex = [];
 
-    function showPDLabel(item) {
-      if (!item || !item.bounds) return;
-      const center = item.bounds.getCenter();
-      if (!map.hasLayer(selectedLabel)) selectedLabel.addTo(map);
-      selectedLabel
-        .setLatLng(center)
-        .bindTooltip(item.name, {
-          permanent : true,
-          direction : 'center',
-          className : 'pd-label'
-        })
-        .openTooltip();
+    function applyPDStyles() {
+      pdIndex.forEach(i => {
+        try {
+          i.layer.setStyle(selectedKeys.has(i.key) ? selectedStyle : baseStyle);
+        } catch {}
+      });
     }
 
-    function hidePDLabel() {
-      try {
-        selectedLabel.remove();
-      } catch {}
+    function syncPDListSelection() {
+      document.querySelectorAll('.pd-cbx').forEach(cbx => {
+        const key = decodeURIComponent(cbx.dataset.key || '');
+        const isSel = selectedKeys.has(key);
+        cbx.checked = isSel;
+
+        const row = cbx.closest('.pd-item');
+        if (row) row.classList.toggle('selected', isSel);
+      });
     }
 
-    function clearListSelection() {
-      document
-        .querySelectorAll('.pd-item.selected')
-        .forEach(el => el.classList.remove('selected'));
-    }
-
-    function markListSelected(key) {
-      clearListSelection();
-      const cbx = document.getElementById(`pd-${encodeURIComponent(key)}`);
-      if (cbx) {
-        const itemEl = cbx.closest('.pd-item');
-        if (itemEl) itemEl.classList.add('selected');
+    function setSingleSelection(item, { zoom = true } = {}) {
+      if (!item) return;
+      selectedKeys.clear();
+      selectedKeys.add(item.key);
+      applyPDStyles();
+      syncPDListSelection();
+      if (zoom) {
+        try { map.fitBounds(item.bounds, { padding: [20, 20] }); } catch {}
       }
     }
 
-    const pdIndex = [];
+    function toggleSelection(item, { zoom = false } = {}) {
+      if (!item) return;
+      if (selectedKeys.has(item.key)) selectedKeys.delete(item.key);
+      else selectedKeys.add(item.key);
+      applyPDStyles();
+      syncPDListSelection();
+      if (zoom) {
+        try { map.fitBounds(item.bounds, { padding: [20, 20] }); } catch {}
+      }
+    }
+
+    function clearPDSelection() {
+      selectedKeys.clear();
+      applyPDStyles();
+      syncPDListSelection();
+      map.closePopup();
+    }
+
+    function selectAllPDs() {
+      selectedKeys.clear();
+      pdIndex.forEach(i => selectedKeys.add(i.key));
+      applyPDStyles();
+      syncPDListSelection();
+    }
+
+    // PD labels
+    function updatePDNameLabels() {
+      const z = map.getZoom();
+      const show = z >= PD_LABEL_SHOW_ZOOM;
+      pdIndex.forEach(i => {
+        if (!i || !i.layer || !i.bounds) return;
+        try {
+          if (show) i.layer.openTooltip(i.bounds.getCenter());
+          else i.layer.closeTooltip();
+        } catch {}
+      });
+    }
+
+    // Build index + map layer
     L.geoJSON(geo, {
       style: baseStyle,
       onEachFeature: (f, layer) => {
-        const p    = f.properties || {};
-        const name = (p.PD_name || p.PD_no || 'Planning District').toString();
+        const p = f?.properties || {};
         const key  = pdKeyFromProps(p);
-        const no   = p.PD_no ?? p.pd_no ?? null;
+        const name = pdNameFromProps(p);
+        const no   = (p?.PD_NO ?? p?.PDNo ?? p?.PD ?? p?.NUMBER ?? null);
+
+        layer.addTo(group);
 
         const item = {
           key,
@@ -251,15 +172,25 @@ fetch(PD_URL)
           layer,
           bounds: layer.getBounds()
         };
-
         pdIndex.push(item);
 
-        layer.on('click', () => {
-          if (selectedKey === item.key) {
-            clearPDSelection();
-          } else {
-            selectPD(item, { zoom: true });
-          }
+        // Bind label tooltip (we open/close it based on zoom level)
+        try {
+          layer.bindTooltip(item.name, {
+            permanent : true,
+            direction : 'center',
+            className : 'pd-name-label',
+            interactive: false
+          });
+          layer.closeTooltip();
+        } catch {}
+
+        // Click on polygon → select
+        layer.on('click', (ev) => {
+          const oe = ev?.originalEvent;
+          const multi = !!(oe && (oe.ctrlKey || oe.metaKey));
+          if (multi) toggleSelection(item, { zoom: false });
+          else setSingleSelection(item, { zoom: true });
         });
       }
     });
@@ -274,212 +205,13 @@ fetch(PD_URL)
       return a.name.localeCompare(b.name, undefined, { numeric: true });
     });
 
-    const show  = i => { if (!map.hasLayer(i.layer)) i.layer.addTo(group); };
-    const hide  = i => { if (map.hasLayer(i.layer)) group.removeLayer(i.layer); };
-    const reset = () => pdIndex.forEach(i => i.layer.setStyle(baseStyle));
-
-    function clearPDSelection() {
-      reset();
-      hidePDLabel();
-      map.closePopup();
-      clearListSelection();
-      selectedKey  = null;
-      selectedItem = null;
-    }
-
-    function selectPD(item, { zoom = true } = {}) {
-      if (!item) return;
-      reset();
-      item.layer.setStyle(selectedStyle);
-      selectedKey  = item.key;
-      selectedItem = item;
-      showPDLabel(item);
-      markListSelected(item.key);
-      if (zoom) {
-        try {
-          map.fitBounds(item.bounds, { padding: [20, 20] });
-        } catch {}
-      }
-
-      // When zones are engaged, refresh them for this PD
-      if (typeof window._zonesShowFor === 'function') {
-        window._zonesShowFor(item.key, null);
-      }
-    }
-
-    // Expose PD select / clear for Zones section to call
-    window._pdClearSelection = clearPDSelection;
-    window._pdSelectByKey = function _pdSelectByKey(key, { zoom = true } = {}) {
-      const item = pdIndex.find(i => String(i.key) === String(key));
-      if (item) selectPD(item, { zoom });
-    };
-
-    // Build the PD list UI (with per-PD route-count box for routing.js)
-    const itemsHTML = pdIndex.map(i => `
-      <div class="pd-item">
-        <input type="checkbox" class="pd-cbx" id="pd-${encodeURIComponent(i.key)}"
-               data-key="${encodeURIComponent(i.key)}" checked>
-        <span class="pd-name" data-key="${encodeURIComponent(i.key)}">${i.name}</span>
-        <input type="number"
-               class="pd-route-count"
-               min="0"
-               max="3"
-               value="1"
-               title="Number of routes to generate for this PD (0–3)">
-      </div>
-    `).join('');
-
-    // PD Control UI
-    const PDControl = L.Control.extend({
-      // LEFT side stack
-      options: { position: 'topleft' },
-      onAdd: function () {
-        const div = L.DomUtil.create('div', 'pd-control');
-        div.dataset.role = 'pd';            // mark for re-ordering
-        div.innerHTML = `
-          <div class="pd-header">
-            <strong>Planning Districts</strong>
-            <div class="pd-actions">
-              <button type="button" id="pd-select-all">Select all</button>
-              <button type="button" id="pd-clear-all">Clear all</button>
-              <button type="button" id="pd-toggle" class="grow">Collapse ▴</button>
-            </div>
-          </div>
-          <div class="pd-list" id="pd-list">${itemsHTML}</div>
-        `;
-        const geocoderEl = document.querySelector('.leaflet-control-geocoder');
-        if (geocoderEl) div.style.width = geocoderEl.offsetWidth + 'px';
-        L.DomEvent.disableClickPropagation(div);
-        return div;
-      }
-    });
-    map.addControl(new PDControl());
-
-    const listEl     = document.getElementById('pd-list');
-    const btnAll     = document.getElementById('pd-select-all');
-    const btnClr     = document.getElementById('pd-clear-all');
-    const btnToggle  = document.getElementById('pd-toggle');
-    const controlDiv = listEl.closest('.pd-control');
-
-    // --- Mouse wheel behavior (PD panel) ---
-    // 1) Scrolling inside the PD panel should NOT zoom the map.
-    // 2) Scrolling inside the white list should scroll the list normally.
-    // 3) Scrolling over the header/buttons should also scroll the list (not zoom the map).
-    if (controlDiv && typeof L !== 'undefined' && L.DomEvent) {
-      // Stops wheel events from propagating to the map
-      if (L.DomEvent.disableScrollPropagation) {
-        L.DomEvent.disableScrollPropagation(controlDiv);
-        L.DomEvent.disableScrollPropagation(listEl);
-      }
-      // Extra safety: stop bubbling from the list itself (do not prevent default so it can scroll)
-      listEl.addEventListener('wheel', (e) => { e.stopPropagation(); }, { passive: true });
-
-      // When wheel is used over header/buttons area, scroll the list instead
-      controlDiv.addEventListener('wheel', (e) => {
-        // If the wheel is happening inside the list, let native scrolling handle it
-        if (e.target && listEl.contains(e.target)) return;
-
-        // Otherwise (header/buttons area): scroll the list, don't zoom the map
-        e.preventDefault();
-        e.stopPropagation();
-        listEl.scrollTop += e.deltaY;
-      }, { passive: false });
-    }
-
-
-    // Show all PDs initially + fit
-    pdIndex.forEach(show);
-    try {
-      map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20, 20] });
-    } catch {}
-
-    // Checkbox visibility
-    listEl.addEventListener('change', (e) => {
-      const cbx = e.target.closest('.pd-cbx');
-      if (!cbx) return;
-      const key  = decodeURIComponent(cbx.dataset.key || '');
-      const item = pdIndex.find(i => i.key === key);
-      if (!item) return;
-
-      if (cbx.checked) {
-        show(item);
-      } else {
-        hide(item);
-        if (selectedKey === key) clearPDSelection();
-      }
-    });
-
-    // Click name to toggle / select
-    listEl.addEventListener('click', (e) => {
-      const nameEl = e.target.closest('.pd-name');
-      if (!nameEl) return;
-      const key  = decodeURIComponent(nameEl.dataset.key || '');
-      const item = pdIndex.find(i => i.key === key);
-      if (!item) return;
-
-      const cbx = document.getElementById(`pd-${encodeURIComponent(key)}`);
-      if (cbx && !cbx.checked) {
-        cbx.checked = true;
-        show(item);
-      }
-      if (selectedKey === key) clearPDSelection();
-      else selectPD(item, { zoom: true });
-    });
-
-    // Buttons: select-all / clear-all / expand-collapse
-    btnAll.addEventListener('click', () => {
-      document.querySelectorAll('.pd-cbx').forEach(c => { c.checked = true; });
-      pdIndex.forEach(show);
-      try {
-        map.fitBounds(L.featureGroup(pdIndex.map(i => i.layer)).getBounds(), { padding: [20, 20] });
-      } catch {}
-    });
-
-    btnClr.addEventListener('click', () => {
-      document.querySelectorAll('.pd-cbx').forEach(c => { c.checked = false; });
-      pdIndex.forEach(hide);
-      clearPDSelection();
-    });
-
-    let _pdCollapsed = false;
-
-    function _setPDCollapsed(state) {
-      _pdCollapsed = !!state;
-      if (_pdCollapsed) {
-        listEl.style.display = 'none';
-        btnToggle.textContent = 'Expand ▾';
-        controlDiv.classList.add('collapsed');
-      } else {
-        listEl.style.display = '';
-        btnToggle.textContent = 'Collapse ▴';
-        controlDiv.classList.remove('collapsed');
-      }
-    }
-
-    // Start expanded (matches the original look: ~10 PDs visible + scrollbar)
-    _setPDCollapsed(false);
-
-    btnToggle.addEventListener('click', () => {
-      _setPDCollapsed(!_pdCollapsed);
-    });
-
-// Hide PD label when zoomed in too far
-    map.on('zoomend', () => {
-      const zoom = map.getZoom();
-      if (zoom >= PD_LABEL_HIDE_ZOOM) {
-        if (map.hasLayer(selectedLabel)) selectedLabel.remove();
-      } else {
-        if (selectedItem && !map.hasLayer(selectedLabel)) showPDLabel(selectedItem);
-      }
-    });
-
-    // === Routing hooks: PD registry + PD targets ===
+    // Expose registry for routing/report code
     window.PD_REGISTRY = {};
     pdIndex.forEach(i => {
       window.PD_REGISTRY[i.key] = { layer: i.layer, name: i.name };
     });
 
-    // Helper: [lon, lat, label] for every checked PD
+    // Helper: [lon, lat, label] for every checked/selected PD
     window.getSelectedPDTargets = function () {
       const boxes = Array.from(document.querySelectorAll('.pd-cbx:checked'));
       const out   = [];
@@ -492,14 +224,166 @@ fetch(PD_URL)
       }
       return out;
     };
+
+    // Give Zones panel a way to "focus" a PD
+    window._pdSelectByKey = function _pdSelectByKey(key, { zoom = true } = {}) {
+      const item = pdIndex.find(i => String(i.key) === String(key));
+      if (item) setSingleSelection(item, { zoom });
+    };
+    window._pdClearSelection = function _pdClearSelection() {
+      clearPDSelection();
+    };
+
+    // ---------------- PD Control UI ----------------
+    const PDControl = L.Control.extend({
+      options: { position: 'topleft' },
+      onAdd: function () {
+        const div = L.DomUtil.create('div', 'pd-control');
+        div.dataset.role = 'pd';
+        div.innerHTML = `
+          <div class="pd-header">
+            <strong>Planning Districts</strong>
+            <div class="pd-actions">
+              <button type="button" id="pd-select-all">Select all</button>
+              <button type="button" id="pd-clear-all">Clear all</button>
+              <button type="button" id="pd-toggle" class="grow">Collapse ▴</button>
+            </div>
+          </div>
+          <div class="pd-list" id="pd-list"></div>
+        `;
+        if (L.DomEvent) {
+          L.DomEvent.disableClickPropagation(div);
+          if (L.DomEvent.disableScrollPropagation) L.DomEvent.disableScrollPropagation(div);
+        }
+        return div;
+      }
+    });
+
+    map.addControl(new PDControl());
+
+    const listEl     = document.getElementById('pd-list');
+    const btnAll     = document.getElementById('pd-select-all');
+    const btnClr     = document.getElementById('pd-clear-all');
+    const btnToggle  = document.getElementById('pd-toggle');
+    const controlDiv = listEl.closest('.pd-control');
+
+    // Build the PD list UI (checkbox + name + route-count)
+    listEl.innerHTML = pdIndex.map(i => `
+      <div class="pd-item" data-key="${encodeURIComponent(i.key)}">
+        <input type="checkbox" class="pd-cbx" id="pd-${encodeURIComponent(i.key)}"
+               data-key="${encodeURIComponent(i.key)}">
+        <span class="pd-name" data-key="${encodeURIComponent(i.key)}">${i.name}</span>
+        <input type="number"
+               class="pd-route-count"
+               min="0"
+               max="3"
+               value="1"
+               title="Number of routes to generate for this PD (0–3)">
+      </div>
+    `).join('');
+
+    // --- Mouse wheel behavior (PD panel) ---
+    // Scroll inside the PD panel should NOT zoom the map.
+    // Scroll inside the white list should scroll the list normally.
+    // Scroll over the header/buttons should scroll the list (not zoom the map).
+    if (controlDiv && typeof L !== 'undefined' && L.DomEvent) {
+      if (L.DomEvent.disableScrollPropagation) {
+        L.DomEvent.disableScrollPropagation(controlDiv);
+        L.DomEvent.disableScrollPropagation(listEl);
+      }
+      // Extra safety: stop bubbling from the list itself (do not prevent default so it can scroll)
+      listEl.addEventListener('wheel', (e) => { e.stopPropagation(); }, { passive: true });
+
+      controlDiv.addEventListener('wheel', (e) => {
+        if (e.target && listEl.contains(e.target)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        listEl.scrollTop += e.deltaY;
+      }, { passive: false });
+    }
+
+    // Clicking the map/list selects PDs.
+    // - Without Ctrl/Cmd: single-select (replaces selection)
+    // - With Ctrl/Cmd: toggle (add/remove while keeping others)
+    function handlePDKeyClick(key, multi, { zoom = true } = {}) {
+      const item = pdIndex.find(i => i.key === key);
+      if (!item) return;
+      if (multi) toggleSelection(item, { zoom: false });
+      else setSingleSelection(item, { zoom });
+    }
+
+    listEl.addEventListener('click', (e) => {
+      const t = e.target;
+
+      // Don't treat clicks in the route-count box as selection clicks
+      if (t && (t.classList?.contains('pd-route-count') || t.closest?.('.pd-route-count'))) return;
+
+      const row = t.closest?.('.pd-item');
+      if (!row) return;
+
+      const key = decodeURIComponent(row.dataset.key || '');
+      const multi = !!(e.ctrlKey || e.metaKey);
+
+      // If the user clicked the checkbox, we fully control checked state.
+      if (t.classList?.contains('pd-cbx')) {
+        e.preventDefault();
+      }
+
+      // Ctrl/Cmd click can also REMOVE a PD from selection
+      if (multi && selectedKeys.has(key)) {
+        const item = pdIndex.find(i => i.key === key);
+        toggleSelection(item, { zoom: false });
+        return;
+      }
+
+      handlePDKeyClick(key, multi, { zoom: true });
+    });
+
+    // Buttons
+    btnAll.addEventListener('click', () => {
+      selectAllPDs();
+      try {
+        map.fitBounds(group.getBounds(), { padding: [20, 20] });
+      } catch {}
+    });
+
+    btnClr.addEventListener('click', () => {
+      clearPDSelection();
+      // Keep base orange layer visible (do NOT remove from map)
+    });
+
+    // Expand / collapse list
+    let _pdCollapsed = false;
+    function _setPDCollapsed(state) {
+      _pdCollapsed = !!state;
+      if (_pdCollapsed) {
+        listEl.style.display = 'none';
+        btnToggle.textContent = 'Expand ▾';
+        controlDiv.classList.add('collapsed');
+      } else {
+        listEl.style.display = '';
+        btnToggle.textContent = 'Collapse ▴';
+        controlDiv.classList.remove('collapsed');
+      }
+    }
+    _setPDCollapsed(false);
+
+    btnToggle.addEventListener('click', () => _setPDCollapsed(!_pdCollapsed));
+
+    // Initial view: show the PD orange layer immediately (already added), no selection
+    applyPDStyles();
+    syncPDListSelection();
+    updatePDNameLabels();
+    map.on('zoomend', updatePDNameLabels);
+
+    // Optional: start by framing all PDs if the user hasn't searched yet
+    try { map.fitBounds(group.getBounds(), { padding: [20, 20] }); } catch {}
   })
   .catch(err => {
     console.error('Failed to load PDs:', err);
     alert('Could not load Planning Districts. See console for details.');
   });
 
-// =====================================================================
-// ===================== Traffic (Planning) Zones ======================
 // =====================================================================
 const ZONES_URL        = 'data/tts_zones.json?v=' + Date.now();
 const ZONE_LABEL_ZOOM  = 14;
