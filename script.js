@@ -253,47 +253,6 @@ fetch(PD_URL)
     const btnClr     = document.getElementById('pd-clear-all');
     const btnToggle  = document.getElementById('pd-toggle');
     const controlDiv = listEl.closest('.pd-control');
-    // --- PD list: keep mouse-wheel scrolling from zooming the map ---
-    // 1) Scrolling inside the white list should NOT zoom the map.
-    if (listEl && typeof L !== 'undefined' && L.DomEvent && L.DomEvent.disableScrollPropagation) {
-      L.DomEvent.disableScrollPropagation(listEl);
-    }
-
-    // 2) Scrolling over the PD action row (Select all / Clear all / Expand/Collapse)
-    // should scroll the PD list (so you can keep scrolling even if your cursor is on the buttons),
-    // and it should NOT zoom the map.
-    const actionsEl = controlDiv ? controlDiv.querySelector('.pd-actions') : null;
-    if (actionsEl && typeof L !== 'undefined' && L.DomEvent && L.DomEvent.disableScrollPropagation) {
-      L.DomEvent.disableScrollPropagation(actionsEl);
-      actionsEl.addEventListener('wheel', (e) => {
-        if (!listEl) return;
-        // If collapsed, just swallow the wheel so the map doesn't zoom.
-        if (controlDiv && controlDiv.classList.contains('collapsed')) {
-          e.preventDefault();
-          e.stopPropagation();
-          return;
-        }
-        listEl.scrollTop += e.deltaY;
-        e.preventDefault();
-        e.stopPropagation();
-      }, { passive: false });
-    }
-
-    // 3) Make collapse work even if CSS rules are missing: hide/show the list directly.
-    const _pdListDisplay = (listEl && window.getComputedStyle)
-      ? (getComputedStyle(listEl).display || 'grid')
-      : 'grid';
-
-    function setPDCollapsed(collapsed) {
-      if (!controlDiv || !btnToggle || !listEl) return;
-      controlDiv.classList.toggle('collapsed', !!collapsed);
-      listEl.style.display = collapsed ? 'none' : _pdListDisplay;
-      btnToggle.textContent = collapsed ? 'Expand ▾' : 'Collapse ▴';
-    }
-
-    // Start expanded (matches your original look in the screenshot)
-    setPDCollapsed(false);
-
 
     // Show all PDs initially + fit
     pdIndex.forEach(show);
@@ -350,10 +309,12 @@ fetch(PD_URL)
     });
 
     btnToggle.addEventListener('click', () => {
+      controlDiv.classList.toggle('collapsed');
       const isCollapsed = controlDiv.classList.contains('collapsed');
-      setPDCollapsed(!isCollapsed);
+      btnToggle.textContent = isCollapsed ? 'Expand ▾' : 'Collapse ▴';
     });
-// Hide PD label when zoomed in too far
+
+    // Hide PD label when zoomed in too far
     map.on('zoomend', () => {
       const zoom = map.getZoom();
       if (zoom >= PD_LABEL_HIDE_ZOOM) {
