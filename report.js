@@ -93,52 +93,46 @@
     }
     await HIGHWAYS_PROMISE;
   }
+
   function nearestHighwayName(lon, lat) {
     if (!HIGHWAYS || !HIGHWAYS.length) return '';
 
     let bestName = '';
     let bestD2 = Infinity;
 
-    // Scan an array of [lon,lat] points
-    function scanPoints(points, candName) {
-      if (!Array.isArray(points)) return;
-      for (const pt of points) {
-        if (!Array.isArray(pt) || pt.length < 2) continue;
-        const dx = pt[0] - lon;
-        const dy = pt[1] - lat;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestD2) {
-          bestD2 = d2;
-          bestName = candName;
-        }
+    function considerPoint(pt, candName) {
+      if (!Array.isArray(pt) || pt.length < 2) return;
+      const x = pt[0], y = pt[1];
+      if (!isFiniteNum(x) || !isFiniteNum(y)) return;
+      const dx = x - lon;
+      const dy = y - lat;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        bestName = candName;
       }
     }
 
+    // Supports LineString + MultiLineString + nested coordinate arrays
+    function walkCoords(arr, candName) {
+      if (!Array.isArray(arr)) return;
+
+      // Coordinate pair [lon, lat]
+      if (arr.length >= 2 && typeof arr[0] === 'number' && typeof arr[1] === 'number') {
+        considerPoint(arr, candName);
+        return;
+      }
+
+      for (const sub of arr) walkCoords(sub, candName);
+    }
+
     for (const f of HIGHWAYS) {
-      if (!f || !f.geometry) continue;
-      const g = f.geometry;
+      if (!f || !f.geometry || !Array.isArray(f.geometry.coordinates)) continue;
       const props = f.properties || {};
       const candName = normalizeName(props.Name || props.name);
       if (!candName) continue;
 
-      if (g.type === 'LineString' && Array.isArray(g.coordinates)) {
-        scanPoints(g.coordinates, candName);
-      } else if (g.type === 'MultiLineString' && Array.isArray(g.coordinates)) {
-        for (const line of g.coordinates) {
-          scanPoints(line, candName);
-        }
-      } else if (Array.isArray(g.coordinates)) {
-        // Fallback: try to interpret as a simple point list
-        scanPoints(g.coordinates, candName);
-      }
-    }
-
-    const MAX_DEG2 = 0.005 * 0.005; // ~500m
-    if (bestName && bestD2 <= MAX_DEG2) return bestName;
-    return '';
-  }
-
-      }
+      walkCoords(f.geometry.coordinates, candName);
     }
 
     const MAX_DEG2 = 0.005 * 0.005; // ~500m
