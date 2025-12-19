@@ -144,7 +144,7 @@
 
   const PD_BASE_STYLE = {
     color: '#ffb347',      // light orange border
-    weight: 3.5,
+    weight: 2.5,
     opacity: 0.95,
     fillColor: '#ffd7a8',  // light orange fill
     fillOpacity: 0.22
@@ -152,7 +152,7 @@
 
   const PD_SELECTED_STYLE = {
     color: '#ff3b30',
-    weight: 7.5,
+    weight: 7,
     opacity: 1,
     fillColor: '#ff3b30',
     fillOpacity: 0.30
@@ -203,7 +203,7 @@ const PD_LABEL_MAX_INCREASE = 0.40;  // +40% max at max zoom
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, zoom - PD_LABEL_MIN_ZOOM);
     const scaleCap = PD_LABEL_MAX_FS / PD_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.40, dz), scaleCap); // ~18% per zoom level
+    const scale = Math.min(Math.pow(1.18, dz), scaleCap); // ~18% per zoom level
     const fs = PD_LABEL_MIN_FS * scale;
     return clamp(fs, PD_LABEL_MIN_FS, PD_LABEL_MAX_FS);
   }
@@ -587,7 +587,7 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_BASE_STYLE = {
     color: '#0b5fff',
-    weight: 3.5,
+    weight: 2.5,
     opacity: 0.65,
     fillColor: '#0b5fff',
     fillOpacity: 0.06
@@ -595,7 +595,7 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_SELECTED_STYLE = {
     color: '#0b5fff',
-    weight: 7.5,
+    weight: 7,
     opacity: 1,
     fillColor: '#0b5fff',
     fillOpacity: 0.10
@@ -624,7 +624,7 @@ nameEl.addEventListener('click', clickHandler);
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, z - PZ_LABEL_MIN_ZOOM);
     const scaleCap = PZ_LABEL_MAX_FS / PZ_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.80, dz), scaleCap); // ~14% per zoom level
+    const scale = Math.min(Math.pow(1.14, dz), scaleCap); // ~14% per zoom level
     const fs = PZ_LABEL_MIN_FS * scale;
     return clamp(fs, PZ_LABEL_MIN_FS, PZ_LABEL_MAX_FS);
   }
@@ -1030,6 +1030,7 @@ let c = null;
 
   // --------------------- Address search (geocoder) ---------------------
   const geocoder = L.Control.geocoder({
+    position: 'topleft',
     defaultMarkGeocode: false,
     placeholder: 'Search...'
   }).on('markgeocode', function (e) {
@@ -1081,4 +1082,99 @@ let c = null;
     if (tryReorder()) return;
     setTimeout(reorderLoop, 120);
   })();
+
+  // --------------------- Compass control (rotate with mouse, dblclick reset) ---------------------
+  const CompassControl = L.Control.extend({
+    options: { position: 'topright' },
+    onAdd: function () {
+      const container = L.DomUtil.create('div', 'leaflet-control leaflet-control-compass leaflet-bar');
+      container.setAttribute('aria-label', 'Compass');
+
+      // One tall button matching zoom control height (2 buttons)
+      const btn = L.DomUtil.create('a', 'compass-btn', container);
+      btn.href = '#';
+      btn.title = 'Compass (drag to rotate, double-click to reset)';
+      btn.setAttribute('role', 'button');
+      btn.setAttribute('aria-label', 'Compass');
+
+      // Simple SVG compass (needle + N)
+      btn.innerHTML = `
+        <div class="compass-inner">
+          <div class="compass-ring"></div>
+          <div class="compass-n">N</div>
+          <div class="compass-needle"></div>
+        </div>
+      `;
+
+      // Prevent map interactions while using compass
+      try { stopMapEvents(container); } catch {}
+
+      let dragging = false;
+      let angleDeg = 0;
+
+      function setAngle(deg) {
+        angleDeg = deg;
+        const needle = container.querySelector('.compass-needle');
+        if (needle) needle.style.transform = `rotate(${deg}deg)`;
+      }
+
+      function centerAndAngleFromEvent(ev) {
+        const rect = btn.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const x = (ev.clientX - cx);
+        const y = (ev.clientY - cy);
+        // 0deg = North (up). atan2 gives angle from +x; we shift so up is 0.
+        const a = Math.atan2(y, x) * 180 / Math.PI; // -180..180, 0 at +x (east)
+        const deg = a + 90; // make 0 at north
+        return deg;
+      }
+
+      function onMove(ev) {
+        if (!dragging) return;
+        ev.preventDefault();
+        const deg = centerAndAngleFromEvent(ev);
+        setAngle(deg);
+      }
+
+      function onUp() {
+        dragging = false;
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseup', onUp, true);
+      }
+
+      btn.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        dragging = true;
+        document.addEventListener('mousemove', onMove, true);
+        document.addEventListener('mouseup', onUp, true);
+      });
+
+      btn.addEventListener('dblclick', (ev) => {
+        ev.preventDefault();
+        setAngle(0);
+      });
+
+      // start north
+      setAngle(0);
+
+      return container;
+    }
+  });
+
+  const compass = new CompassControl();
+  map.addControl(compass);
+
+  // Place compass immediately left of the zoom control
+  (function placeCompass() {
+    const right = document.querySelector('.leaflet-top.leaflet-right');
+    if (!right) return;
+    const compassEl = right.querySelector('.leaflet-control-compass');
+    const zoomEl = right.querySelector('.leaflet-control-zoom');
+    if (compassEl && zoomEl) {
+      // Ensure order: compass then zoom
+      right.insertBefore(compassEl, zoomEl);
+    }
+  })();
+
 })();
