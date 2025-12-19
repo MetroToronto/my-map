@@ -14,7 +14,7 @@
   'use strict';
 
   // --------------------- Map boot ---------------------
-  const map = L.map('map').setView([43.96199, -79.750301], 11);
+  const map = L.map('map').setView([43.96199, -79.750351], 11);
   window.map = map; // required by routing.js / report.js
 
   map.zoomControl.setPosition('topright');
