@@ -99,6 +99,7 @@ button.ghost {
   box-sizing: border-box;
   flex: 1 1 110px;        /* take remaining space */
   min-width: 90px;
+  width: auto !important; /* override global input{width:100%} so it stays inline */
 }
 
 /* ---- Routing card tweaks ---- */
@@ -183,22 +184,4 @@ button.ghost {
 /* Keep Leaflet zoom to right if your JS moves it */
 .leaflet-control-zoom {
   margin-top: 10px !important;
-}
-
-/* Traffic Zones: keep Engage/Disengage + Zone search on ONE ROW (no width change) */
-.pd-actions.pd-actions-zones .btn {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.pd-actions.pd-actions-zones .tz-search {
-  flex: 1 1 auto;
-  min-width: 0;              /* allows it to shrink inside the fixed panel width */
-  height: 34px;
-  box-sizing: border-box;
-}
-
-/* Keep origin search bar above other left-side panels */
-.leaflet-top.leaflet-left .leaflet-control-geocoder {
-  z-index: 9999;
 }
