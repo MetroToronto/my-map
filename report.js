@@ -807,13 +807,29 @@
     options: { position: 'topleft' },
     onAdd: function () {
       const div = L.DomUtil.create('div', 'report-control');
+      
       div.innerHTML = `
-        <div class="routing-header"><strong>Report</strong></div>
-        <div class="routing-row">
-          <button type="button" id="rt-print-report">Print Report</button>
+        <div class="report-inner" style="padding:10px;">
+          <button type="button" id="rt-view-report"
+                  style="
+                    width:100%;
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    padding:14px 12px;
+                    border-radius:14px;
+                    border:1px solid rgba(0,0,0,.18);
+                    font-weight:700;
+                    font-size:16px;
+                    cursor:not-allowed;
+                    background:#d9d9d9;
+                    color:#000;
+                  "
+                  disabled
+          >View Report</button>
         </div>
       `;
-      const btn = div.querySelector('#rt-print-report');
+const btn = div.querySelector('#rt-view-report');
       if (btn) {
         btn.addEventListener('click', function (e) {
           e.preventDefault();
@@ -821,6 +837,43 @@
           printReport();
         });
       }
+      
+      // Enable only when routing has completed (ROUTING_CACHE populated and routing buttons not busy).
+      const setBtnState = (enabled) => {
+        if (!btn) return;
+        if (enabled) {
+          btn.disabled = false;
+          btn.style.background = '#228B22'; // forest green
+          btn.style.color = '#fff';
+          btn.style.cursor = 'pointer';
+        } else {
+          btn.disabled = true;
+          btn.style.background = '#d9d9d9';
+          btn.style.color = '#000';
+          btn.style.cursor = 'not-allowed';
+        }
+      };
+
+      const isRoutingBusy = () => {
+        const b1 = document.getElementById('rt-gen-pd');
+        const b2 = document.getElementById('rt-gen-pz');
+        return (!!(b1 && b1.disabled) || !!(b2 && b2.disabled));
+      };
+
+      // Keep state in sync even if routing finishes after this control is created.
+      const updateState = () => {
+        const cache = global.ROUTING_CACHE;
+        const ready = !!(cache && Array.isArray(cache.trips) && cache.trips.length) && !isRoutingBusy();
+        setBtnState(ready);
+      };
+
+      // Initial + lightweight polling (clears itself if control is removed)
+      updateState();
+      const timer = setInterval(() => {
+        if (!div.isConnected) { clearInterval(timer); return; }
+        updateState();
+      }, 300);
+
       L.DomEvent.disableClickPropagation(div);
       return div;
     }
