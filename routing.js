@@ -233,10 +233,13 @@
       }
 
       if (S.minuteCount >= MAX_PER_MINUTE) {
-        const waitMs = 60_000;
-        showRateWaitOverlay(waitMs);
-        await sleep(waitMs);
-        hideRateWaitOverlay();
+        const resetAt = S.minuteStartMs + 60_000;
+        const waitMs  = Math.max(0, resetAt - now);
+        if (waitMs > 0) {
+          showRateWaitOverlay(waitMs);
+          await sleep(waitMs);
+          hideRateWaitOverlay();
+        }
         S.minuteStartMs = Date.now();
         S.minuteCount   = 0;
       }
@@ -250,85 +253,64 @@
   async function orsFetch(path, { method = 'GET', body } = {}, attempt = 0) {
     const url = new URL(ORS_BASE + path);
 
-    // This function is used deep inside long batch runs (PD trips / PZ trips).
-    // We intentionally tolerate repeated 429s by pausing for a full 60 seconds
-    // and then continuing, so large runs (>80 routes) can finish.
-    let tries = attempt;
-    const MAX_TRIES = 12;
-
-    while (true) {
-      let res;
-      try {
-        res = await fetch(url.toString(), {
-          method,
-          headers: {
-            Authorization: currentKey(),
-            ...(method !== 'GET' && { 'Content-Type': 'application/json' })
-          },
-          body: method === 'GET' ? undefined : JSON.stringify(body)
-        });
-      } catch (e) {
-        // Network / CORS / transient failure (“Failed to fetch”, etc.)
-        if (tries < MAX_TRIES) {
-          const waitMs = 10_000 * Math.min(6, tries + 1); // 10s, 20s, ..., 60s
-          showRateWaitOverlay(waitMs);
-          await sleep(waitMs);
-          hideRateWaitOverlay();
-          tries += 1;
-          continue;
-        }
-        throw new Error(e && e.message ? e.message : 'Failed to fetch');
+    let res;
+    try {
+      res = await fetch(url.toString(), {
+        method,
+        headers: {
+          Authorization: currentKey(),
+          ...(method !== 'GET' && { 'Content-Type': 'application/json' })
+        },
+        body: method === 'GET' ? undefined : JSON.stringify(body)
+      });
+    } catch (e) {
+      // Network / CORS / transient failure (“Failed to fetch”, etc.)
+      if (attempt < 2) {
+        const waitMs = 10_000 * (attempt + 1); // 10s, then 20s
+        showRateWaitOverlay(waitMs);
+        await sleep(waitMs);
+        hideRateWaitOverlay();
+        return orsFetch(path, { method, body }, attempt + 1);
       }
+      throw new Error(e && e.message ? e.message : 'Failed to fetch');
+    }
 
-      // 429 Too Many Requests
-      if (res.status === 429) {
-        // If we have multiple keys, rotate
-        if (rotateKey()) {
-          await sleep(150);
-          tries += 1;
-          continue;
-        }
-
-        // Single key: honour Retry-After but ALWAYS wait at least 60s
+    // 429 Too Many Requests
+    if (res.status === 429) {
+      // If we have multiple keys, rotate
+      if (rotateKey()) {
+        await sleep(150);
+        return orsFetch(path, { method, body }, attempt + 1);
+      }
+      // Single key: honour Retry-After or wait ~60s
+      if (attempt < 2) {
         let waitMs = 60_000;
         const retryAfter = res.headers.get('retry-after');
         if (retryAfter) {
           const parsed = parseInt(retryAfter, 10);
           if (!Number.isNaN(parsed) && parsed >= 0) {
-            waitMs = Math.max(waitMs, parsed * 1000);
+            waitMs = parsed * 1000;
           }
         }
-
         showRateWaitOverlay(waitMs);
         await sleep(waitMs);
         hideRateWaitOverlay();
-
-        // Reset local limiter window so the next requests don't immediately trip again.
-        S.minuteStartMs = Date.now();
-        S.minuteCount   = 0;
-
-        tries += 1;
-        if (tries > MAX_TRIES) {
-          const txt = await res.text().catch(() => res.statusText);
-          throw new Error(`ORS 429 after repeated waits: ${txt}`);
-        }
-        continue;
+        return orsFetch(path, { method, body }, attempt + 1);
       }
-
-      // 401/403 with multiple keys → rotate and retry
-      if ([401, 403].includes(res.status) && rotateKey()) {
-        await sleep(150);
-        tries += 1;
-        continue;
-      }
-
-      if (!res.ok) {
-        const txt = await res.text().catch(() => res.statusText);
-        throw new Error(`ORS ${res.status}: ${txt}`);
-      }
-
-      return res.json();
     }
+
+    // 401/403 with multiple keys → rotate and retry
+    if ([401, 403].includes(res.status) && rotateKey()) {
+      await sleep(150);
+      return orsFetch(path, { method, body }, attempt + 1);
+    }
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => res.statusText);
+      throw new Error(`ORS ${res.status}: ${txt}`);
+    }
+
+    return res.json();
   }
 
   // ===== Directions wrapper =====
@@ -774,6 +756,53 @@
     });
   }
 
+
+
+  // Overlay for missing origin (match “single PD” popup style)
+  function showNoOriginPopup() {
+    const existing = document.getElementById('routing-origin-overlay');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'routing-origin-overlay';
+    backdrop.style.position = 'fixed';
+    backdrop.style.inset = '0';
+    backdrop.style.zIndex = '9999';
+    backdrop.style.background = 'rgba(0,0,0,0.35)';
+    backdrop.style.display = 'flex';
+    backdrop.style.alignItems = 'center';
+    backdrop.style.justifyContent = 'center';
+
+    const box = document.createElement('div');
+    box.style.background = '#fff';
+    box.style.padding = '16px 20px';
+    box.style.borderRadius = '8px';
+    box.style.maxWidth = '420px';
+    box.style.width = '90%';
+    box.style.boxShadow = '0 8px 20px rgba(0,0,0,0.25)';
+    box.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    box.innerHTML = `
+      <h3 style="margin:0 0 8px 0;">Select an origin</h3>
+      <p style="margin:0 0 12px 0;font-size:0.95em;">
+        <strong>Trip generation</strong> requires an origin point.
+        Please pick an origin using the address search bar before generating trips.
+      </p>
+      <div style="text-align:right;">
+        <button id="routing-origin-close">Close</button>
+      </div>
+    `;
+
+    backdrop.appendChild(box);
+    document.body.appendChild(backdrop);
+
+    const closeBtn = box.querySelector('#routing-origin-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => backdrop.remove());
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) backdrop.remove();
+    });
+  }
+
+
   // ===== Button state =====
   function setBusy(mode, busy) {
     const btnPD    = byId('rt-gen-pd');
@@ -893,7 +922,7 @@
       if (e.type === 'validation') {
         showValidationPopup(e.invalid);
       } else if (e.code === 'NO_ORIGIN') {
-        alert('Please pick an origin using the address search bar before generating trips.');
+        showNoOriginPopup();
       } else {
         alert('Routing error: ' + (e.message || e));
       }
