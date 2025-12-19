@@ -144,7 +144,7 @@
 
   const PD_BASE_STYLE = {
     color: '#ffb347',      // light orange border
-    weight: 1.5,
+    weight: 2.5,
     opacity: 0.95,
     fillColor: '#ffd7a8',  // light orange fill
     fillOpacity: 0.22
@@ -152,7 +152,7 @@
 
   const PD_SELECTED_STYLE = {
     color: '#ff3b30',
-    weight: 5,
+    weight: 7,
     opacity: 1,
     fillColor: '#ff3b30',
     fillOpacity: 0.30
@@ -161,7 +161,8 @@
   const pdGroup = L.layerGroup().addTo(map);
   const pdLabelGroup = L.layerGroup().addTo(map);
 
-  const PD_LABEL_MIN_ZOOM = 11;        // show labels when closer         // show labels when closer
+  const PD_LABEL_MAX_INCREASE = 0.40;
+  const PD_LABEL_MIN_ZOOM = 10;        // show labels when closer         // show labels when closer
   const PD_LABEL_MAX_FS   = 18;
   const PD_LABEL_MIN_FS   = 11;
 
@@ -195,10 +196,7 @@
   function pdLabelFontSize(zoom) {
     // gentle scale: +1.2px per zoom step
     const fs = PD_LABEL_MIN_FS + (zoom - PD_LABEL_MIN_ZOOM) * 1.2;
-    return clamp(fs, PD_LABEL_MIN_FS, PD_LABEL_MAX_FS);
-  }
-
-  function updatePDLabels() {
+    return clamp(fs, PD_LABEL_MIN_FS, PD_LABEL_MAX_F
     const z = map.getZoom();
     const show = z >= PD_LABEL_MIN_ZOOM;
 
@@ -215,6 +213,17 @@ if (!show || hideBecauseZones) {
       } else {
         labelEl.classList.remove('is-hidden');
         labelEl.style.setProperty('--fs', `${pdLabelFontSize(z)}px`);
+      }
+    }
+  
+
+    // Apply zoom-based scaling to PD labels
+    const z = map.getZoom();
+    const maxZ = (typeof map.getMaxZoom === 'function' ? (map.getMaxZoom() || 18) : 18);
+    const s = computeLabelScale(z, PD_LABEL_MIN_ZOOM, maxZ, PD_LABEL_MAX_INCREASE);
+    document.querySelectorAll('.map-label.pd-label').forEach(el => applyLabelScale(el, s));
+
+abelFontSize(z)}px`);
       }
     }
   }
@@ -571,7 +580,7 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_BASE_STYLE = {
     color: '#0b5fff',
-    weight: 1.5,
+    weight: 2.5,
     opacity: 0.65,
     fillColor: '#0b5fff',
     fillOpacity: 0.06
@@ -579,18 +588,35 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_SELECTED_STYLE = {
     color: '#0b5fff',
-    weight: 5,
+    weight: 7,
     opacity: 1,
     fillColor: '#0b5fff',
     fillOpacity: 0.10
   };
 
-  const PZ_LABEL_MIN_ZOOM = 12;
+  const PZ_LABEL_MAX_INCREASE = 0.20;
+  const PZ_LABEL_MIN_ZOOM = 13;
+
+  // ===== Label scaling helpers (smooth growth with zoom) =====
+  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+
+  // maxIncrease: 0.2 means +20% by maxZoom (relative to minZoom)
+  function computeLabelScale(zoom, minZoom, maxZoom, maxIncrease) {
+    const t = clamp01((zoom - minZoom) / Math.max(1, (maxZoom - minZoom)));
+    return 1 + (maxIncrease * t);
+  }
+
+  function applyLabelScale(el, scale) {
+    if (!el) return;
+    el.style.transformOrigin = 'center';
+    el.style.transform = `scale(${scale})`;
+  }
   const PZ_LABEL_MIN_FS   = 10;
   const PZ_LABEL_MAX_FS   = 15;
 
   const pzLabelMarkers = new Map(); // zoneKey -> marker
   let selectedZoneLayer = null;
+  let selectedZoneLabelMarker = null;
   // Persistent selected zone overlay (stays even when zones are disengaged)
   const selectedZonePersistGroup = L.layerGroup().addTo(map);
   let selectedZonePersistLayer = null;
@@ -628,7 +654,15 @@ nameEl.addEventListener('click', clickHandler);
                     zoneKeyFromProps((selectedZoneLayer.feature.properties || {})) === zKey;
       labelEl.classList.toggle('is-selected', !!isSel);
     }
-  }
+  
+
+    // Apply zoom-based scaling to TZ labels
+    const z = map.getZoom();
+    const maxZ = (typeof map.getMaxZoom === 'function' ? (map.getMaxZoom() || 18) : 18);
+    const s = computeLabelScale(z, PZ_LABEL_MIN_ZOOM, maxZ, PZ_LABEL_MAX_INCREASE);
+    document.querySelectorAll('.map-label.pz-label').forEach(el => applyLabelScale(el, s));
+
+}
 
   function centerOfZoneFeature(f) {
     try {
