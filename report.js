@@ -62,6 +62,16 @@
     return n;
   }
 
+
+  // Treat generic placeholder names as “no name” so we can snap to a highway centerline.
+  function isUnnamedLike(name) {
+    if (!name) return true;
+    const n = normalizeName(name).toLowerCase();
+    // ORS commonly returns placeholders like “Unnamed Road”.
+    if (n.includes('unnamed') || n.includes('unknown')) return true;
+    return false;
+  }
+
   /******************************************************************
    * Highway centreline support
    ******************************************************************/
@@ -94,28 +104,66 @@
     await HIGHWAYS_PROMISE;
   }
 
-  function nearestHighwayName(lon, lat) {
+    function nearestHighwayName(lon, lat) {
     if (!HIGHWAYS || !HIGHWAYS.length) return '';
+
+    // Point-to-segment distance squared in lon/lat degrees (good enough for snapping by threshold).
+    function segD2(px, py, ax, ay, bx, by) {
+      const abx = bx - ax;
+      const aby = by - ay;
+      const apx = px - ax;
+      const apy = py - ay;
+      const abLen2 = abx * abx + aby * aby;
+      let t = 0;
+      if (abLen2 > 0) t = (apx * abx + apy * aby) / abLen2;
+      if (t < 0) t = 0;
+      if (t > 1) t = 1;
+      const cx = ax + t * abx;
+      const cy = ay + t * aby;
+      const dx = px - cx;
+      const dy = py - cy;
+      return dx * dx + dy * dy;
+    }
+
+    function scanLine(points, candName) {
+      if (!Array.isArray(points) || points.length < 2) return;
+      for (let i = 0; i < points.length - 1; i++) {
+        const a = points[i];
+        const b = points[i + 1];
+        if (!a || !b || a.length < 2 || b.length < 2) continue;
+        const d2 = segD2(lon, lat, a[0], a[1], b[0], b[1]);
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestName = candName;
+        }
+      }
+    }
 
     let bestName = '';
     let bestD2 = Infinity;
 
     for (const f of HIGHWAYS) {
-      if (!f || !f.geometry || !Array.isArray(f.geometry.coordinates)) continue;
-      const coords = f.geometry.coordinates;
+      if (!f || !f.geometry) continue;
+      const g = f.geometry;
       const props = f.properties || {};
       const candName = normalizeName(props.Name || props.name);
       if (!candName) continue;
 
-      for (const c of coords) {
-        if (!Array.isArray(c) || c.length < 2) continue;
-        const dx = c[0] - lon;
-        const dy = c[1] - lat;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestD2) {
-          bestD2 = d2;
-          bestName = candName;
-        }
+      if (g.type === 'LineString' && Array.isArray(g.coordinates)) {
+        scanLine(g.coordinates, candName);
+      } else if (g.type === 'MultiLineString' && Array.isArray(g.coordinates)) {
+        for (const line of g.coordinates) scanLine(line, candName);
+      } else if (Array.isArray(g.coordinates)) {
+        // Fallback: try to interpret as a single line
+        scanLine(g.coordinates, candName);
+      }
+    }
+
+    const MAX_DEG2 = 0.005 * 0.005; // ~500m
+    if (bestName && bestD2 <= MAX_DEG2) return bestName;
+    return '';
+  }
+
       }
     }
 
@@ -211,128 +259,23 @@
     if (!step) return '';
     let name = normalizeName(step.name || step.road);
     if (name && GENERIC_INSTR_RE.test(name)) return '';
+      // Snap “no name” / placeholder segments to nearest highway centreline (e.g., HIGHWAY 401).
+      if (!name || isUnnamedLike(name)) {
+        const coords = step.geometry && Array.isArray(step.geometry.coordinates)
+          ? step.geometry.coordinates
+          : (Array.isArray(step.way_points_coords) ? step.way_points_coords : null);
 
-    if (!name) {
-      const instr = cleanHtml(step.instruction || '');
-      if (instr) {
-        let m = instr.match(/\bonto\s+([^,]+?)(?:\s+for\b|,|$)/i);
-        if (!m) m = instr.match(/\bvia\s+([^,]+?)(?:\s+for\b|,|$)/i);
-        if (!m) m = instr.match(/\bonto\s+(.+)$/i);
-        if (!m) m = instr.match(/\bvia\s+(.+)$/i);
-        const cand = m ? m[1] : instr;
-        name = normalizeName(cand);
-        if (name && GENERIC_INSTR_RE.test(name)) return '';
-      }
-    }
-
-    if (name) {
-      name = finalNameCleanup(name);
-    }
-
-    return name;
-  }
-
-  // Normalize to a "highway group" name (for merging)
-  function highwayBase(nameUpper) {
-    let n = nameUpper;
-    if (/GARDINER/.test(n)) {
-      n = n
-        .replace(/\bEXPRESSWAY\b/g, '')
-        .replace(/\bEXPRESS\b/g, '')
-        .replace(/\bCOLLECTOR\b/g, '')
-        .replace(/\bF G\b/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      return n || 'GARDINER';
-    }
-    if (/HIGHWAY\s+401\b/.test(n)) {
-      return 'HIGHWAY 401';
-    }
-    return null;
-  }
-
-  // Key for merging consecutive movements
-  // For highways (Gardiner + 401), ignore direction so they always merge
-  function mergeKey(m) {
-    const dir = m.dir || '';
-    let nameUpper = (m.name || '').toUpperCase().replace(/\s+/g, ' ').trim();
-    const hw = highwayBase(nameUpper);
-    if (hw) {
-      return 'HW|' + hw;   // highway group, direction-insensitive
-    }
-    return dir + '|' + nameUpper;
-  }
-
-  function mergeConsecutive(movs) {
-    const out = [];
-    for (const m of movs) {
-      if (!m || !m.name || !m.km || m.km <= 0) continue;
-      if (out.length) {
-        const last = out[out.length - 1];
-        if (mergeKey(last) === mergeKey(m)) {
-          last.km += m.km;
-          continue;
+        if (coords && coords.length) {
+          const startIdx = 0;
+          const endIdx = coords.length - 1;
+          const midIdx = Math.floor(coords.length / 2);
+          const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
+          if (mid && mid.length >= 2) {
+            const hName = nearestHighwayName(mid[0], mid[1]);
+            if (hName) name = finalNameCleanup(hName);
+          }
         }
       }
-      out.push({ dir: m.dir, name: m.name, km: m.km });
-    }
-    return out;
-  }
-
-  /******************************************************************
-   * ORS → movements
-   ******************************************************************/
-  function extractStepsFromFeature(feature) {
-    if (!feature || !feature.properties) return [];
-    const props = feature.properties;
-    if (Array.isArray(props.steps) && props.steps.length) return props.steps;
-    const segments = Array.isArray(props.segments) ? props.segments : [];
-    const out = [];
-    for (const seg of segments) {
-      if (seg && Array.isArray(seg.steps)) out.push(...seg.steps);
-    }
-    return out;
-  }
-
-  function buildMovementsFromDirections(coords, steps) {
-    if (!coords || !coords.length || !steps || !steps.length) return [];
-
-    const MIN_SEG_KM = 0.03; // < 30 m → ghost
-    const rows = [];
-
-    for (const step of steps) {
-      if (!step) continue;
-
-      const wp = step.way_points || step.wayPoints || [];
-      const len = coords.length;
-      const a = wp[0] ?? 0;
-      const b = wp[1] ?? (len - 1);
-      const startIdx = Math.max(0, Math.min(len - 1, a));
-      const endIdx   = Math.max(startIdx, Math.min(len - 1, b));
-      if (endIdx <= startIdx) continue;
-
-      let km = Number(step.distance); // ORS distance in km
-      if (!isFiniteNum(km) || km <= 0) {
-        let meters = 0;
-        for (let i = startIdx + 1; i <= endIdx; i++) {
-          meters += haversineMeters(coords[i - 1], coords[i]);
-        }
-        km = meters / 1000;
-      }
-      if (!isFiniteNum(km) || km < MIN_SEG_KM) continue;
-
-      const segCoords = coords.slice(startIdx, endIdx + 1);
-      const dir = directionFromSegment(segCoords) || '';
-
-      let name = stepNameNatural(step);
-
-      if (!name) {
-        const midIdx = Math.floor((startIdx + endIdx) / 2);
-        const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
-        if (mid && mid.length >= 2) {
-          const hName = nearestHighwayName(mid[0], mid[1]);
-          if (hName) name = finalNameCleanup(hName);
-        }
       }
 
       if (!name) {
@@ -808,60 +751,18 @@
     onAdd: function () {
       const div = L.DomUtil.create('div', 'report-control');
       div.innerHTML = `
-        <div style="padding:8px;">
-          <button type="button" id="rt-view-report" disabled
-            style="
-              width: 100%;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              padding: 14px 12px;
-              border-radius: 14px;
-              border: 1px solid rgba(0,0,0,0.18);
-              font-weight: 700;
-              font-size: 16px;
-              background: #d9d9d9;
-              color: #000;
-              cursor: not-allowed;
-            "
-          >View Report</button>
+        <div class="routing-header"><strong>Report</strong></div>
+        <div class="routing-row">
+          <button type="button" id="rt-print-report">Print Report</button>
         </div>
       `;
-const btn = div.querySelector('#rt-view-report');
-      // Enable the button only after routes have been generated (RoutingCache populated).
-      function isReportReady() {
-        const cache = global.ROUTING_CACHE;
-        return !!(cache && Array.isArray(cache.trips) && cache.trips.length);
-      }
-
-      function setBtnState(ready) {
-        if (!btn) return;
-        if (ready) {
-          btn.disabled = false;
-          btn.style.background = '#228B22'; // forest green
-          btn.style.color = '#fff';
-          btn.style.cursor = 'pointer';
-        } else {
-          btn.disabled = true;
-          btn.style.background = '#d9d9d9';
-          btn.style.color = '#000';
-          btn.style.cursor = 'not-allowed';
-        }
-      }
-
-      // Initial state + keep in sync (routing finishes later; cache may clear on "Clear")
-      setBtnState(isReportReady());
-      const __rtTimer = setInterval(() => {
-        if (!div.isConnected) { clearInterval(__rtTimer); return; }
-        setBtnState(isReportReady());
-      }, 300);
-
+      const btn = div.querySelector('#rt-print-report');
       if (btn) {
         btn.addEventListener('click', function (e) {
           e.preventDefault();
           e.stopPropagation();
-          if (isReportReady()) { printReport(); }
-          });
+          printReport();
+        });
       }
       L.DomEvent.disableClickPropagation(div);
       return div;
