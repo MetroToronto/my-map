@@ -801,6 +801,51 @@
     });
   }
 
+
+  // Overlay for “routing complete”
+  function showTripCompletePopup() {
+    const existing = document.getElementById('routing-complete-overlay');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'routing-complete-overlay';
+    backdrop.style.position = 'fixed';
+    backdrop.style.inset = '0';
+    backdrop.style.zIndex = '9999';
+    backdrop.style.background = 'rgba(0,0,0,0.35)';
+    backdrop.style.display = 'flex';
+    backdrop.style.alignItems = 'center';
+    backdrop.style.justifyContent = 'center';
+
+    const box = document.createElement('div');
+    box.style.background = '#fff';
+    box.style.padding = '16px 20px';
+    box.style.borderRadius = '8px';
+    box.style.maxWidth = '520px';
+    box.style.width = '92%';
+    box.style.boxShadow = '0 8px 20px rgba(0,0,0,0.25)';
+    box.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    box.innerHTML = `
+      <h2 style="margin:0 0 10px 0;font-size:26px;font-weight:800;">Trip Distribution Complete!</h2>
+      <p style="margin:0 0 14px 0;font-size:0.98em;line-height:1.35;">
+        All requested routes have been generated.
+      </p>
+      <div style="text-align:right;">
+        <button id="routing-complete-close">Close</button>
+      </div>
+    `;
+
+    backdrop.appendChild(box);
+    document.body.appendChild(backdrop);
+
+    const closeBtn = box.querySelector('#routing-complete-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => backdrop.remove());
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) backdrop.remove();
+    });
+  }
+
+
 // ===== Button state =====
   function setBusy(mode, busy) {
     const btnPD    = byId('rt-gen-pd');
@@ -915,6 +960,8 @@
         reverse,
         trips: S.lastTrips
       };
+
+      showTripCompletePopup();
     } catch (e) {
       console.error(e);
       if (e.type === 'validation') {
@@ -1030,6 +1077,8 @@
         reverse,
         trips: S.lastTrips
       };
+
+      showTripCompletePopup();
     } catch (e) {
       console.error(e);
       if (e.code === 'NO_ORIGIN') {
