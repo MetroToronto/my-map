@@ -1035,7 +1035,7 @@
     } catch (e) {
       console.error(e);
       if (e.code === 'NO_ORIGIN') {
-        alert('Please pick an origin using the address search bar before generating trips.');
+        showNoOriginPopup();
       } else {
         alert('Routing error: ' + (e.message || e));
       }
