@@ -1098,20 +1098,6 @@
             Reverse direction (PD/PZ → origin)
           </label>
         </div>
-        <details>
-          <summary><strong>Keys</strong></summary>
-          <div class="routing-card">
-            <label for="rt-keys" style="font-weight:600;">OpenRouteService key(s)</label>
-            <input id="rt-keys" type="text" placeholder="KEY1,KEY2 (comma-separated)">
-            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px;">
-              <button id="rt-save">Save Keys</button>
-              <button id="rt-url" class="ghost">Use ?orsKey</button>
-            </div>
-            <small class="routing-hint">
-              Priority: ?orsKey → saved → inline fallback. Keys auto-rotate on 401/429.
-            </small>
-          </div>
-        </details>
       `;
       const geocoderEl = document.querySelector('.leaflet-control-geocoder');
       if (geocoderEl) el.style.width = geocoderEl.offsetWidth + 'px';
