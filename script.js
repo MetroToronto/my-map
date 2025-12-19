@@ -144,7 +144,7 @@
 
   const PD_BASE_STYLE = {
     color: '#ffb347',      // light orange border
-    weight: 2.5,
+    weight: 3.5,
     opacity: 0.95,
     fillColor: '#ffd7a8',  // light orange fill
     fillOpacity: 0.22
@@ -152,7 +152,7 @@
 
   const PD_SELECTED_STYLE = {
     color: '#ff3b30',
-    weight: 7,
+    weight: 7.5,
     opacity: 1,
     fillColor: '#ff3b30',
     fillOpacity: 0.30
@@ -203,7 +203,7 @@ const PD_LABEL_MAX_INCREASE = 0.40;  // +40% max at max zoom
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, zoom - PD_LABEL_MIN_ZOOM);
     const scaleCap = PD_LABEL_MAX_FS / PD_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.18, dz), scaleCap); // ~18% per zoom level
+    const scale = Math.min(Math.pow(1.40, dz), scaleCap); // ~18% per zoom level
     const fs = PD_LABEL_MIN_FS * scale;
     return clamp(fs, PD_LABEL_MIN_FS, PD_LABEL_MAX_FS);
   }
@@ -587,7 +587,7 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_BASE_STYLE = {
     color: '#0b5fff',
-    weight: 2.5,
+    weight: 3.5,
     opacity: 0.65,
     fillColor: '#0b5fff',
     fillOpacity: 0.06
@@ -595,7 +595,7 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_SELECTED_STYLE = {
     color: '#0b5fff',
-    weight: 7,
+    weight: 7.5,
     opacity: 1,
     fillColor: '#0b5fff',
     fillOpacity: 0.10
@@ -624,7 +624,7 @@ nameEl.addEventListener('click', clickHandler);
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, z - PZ_LABEL_MIN_ZOOM);
     const scaleCap = PZ_LABEL_MAX_FS / PZ_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.14, dz), scaleCap); // ~14% per zoom level
+    const scale = Math.min(Math.pow(1.80, dz), scaleCap); // ~14% per zoom level
     const fs = PZ_LABEL_MIN_FS * scale;
     return clamp(fs, PZ_LABEL_MIN_FS, PZ_LABEL_MAX_FS);
   }
@@ -1030,7 +1030,6 @@ let c = null;
 
   // --------------------- Address search (geocoder) ---------------------
   const geocoder = L.Control.geocoder({
-    position: 'topleft',
     defaultMarkGeocode: false,
     placeholder: 'Search...'
   }).on('markgeocode', function (e) {
@@ -1082,149 +1081,4 @@ let c = null;
     if (tryReorder()) return;
     setTimeout(reorderLoop, 120);
   })();
-
-  // --------------------- Compass control (drag to rotate map, dblclick reset) ---------------------
-  // IMPORTANT:
-  // - Leaflet core does NOT rotate maps.
-  // - If you include the "leaflet-rotate" plugin in index.html, it adds map.setBearing()/getBearing()
-  //   and this compass will rotate the map. Without it, the compass will still rotate visually.
-  const CompassControl = L.Control.extend({
-    options: { position: 'topright' },
-    onAdd: function (map) {
-      const container = L.DomUtil.create('div', 'leaflet-control leaflet-control-compass leaflet-bar');
-      container.setAttribute('aria-label', 'Compass');
-
-      // One tall button matching zoom control height (2 buttons)
-      const btn = L.DomUtil.create('a', 'compass-btn', container);
-      btn.href = '#';
-      btn.title = 'Compass (drag to rotate, double-click to reset)';
-      btn.setAttribute('role', 'button');
-      btn.setAttribute('aria-label', 'Compass');
-
-      btn.innerHTML = `
-        <div class="compass-inner">
-          <div class="compass-ring"></div>
-          <div class="compass-n">N</div>
-          <div class="compass-needle"></div>
-        </div>
-      `;
-
-      // Prevent map interactions while using compass
-      try { stopMapEvents(container); } catch {}
-
-      let dragging = false;
-      let rafPending = false;
-      let pendingDeg = 0;
-
-      function normDeg(deg) {
-        const d = deg % 360;
-        return d < 0 ? d + 360 : d;
-      }
-
-      function applyDeg(deg) {
-        const needle = container.querySelector('.compass-needle');
-        if (needle) needle.style.transform = `rotate(${deg}deg)`;
-
-        // Rotate map if plugin is present
-        if (map && typeof map.setBearing === 'function') {
-          map.setBearing(normDeg(deg));
-        }
-      }
-
-      function scheduleApply(deg) {
-        pendingDeg = deg;
-        if (rafPending) return;
-        rafPending = true;
-        requestAnimationFrame(() => {
-          rafPending = false;
-          applyDeg(pendingDeg);
-        });
-      }
-
-      function degFromEvent(ev) {
-        const rect = btn.getBoundingClientRect();
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        const x = (ev.clientX - cx);
-        const y = (ev.clientY - cy);
-        // 0deg = North (up). atan2 gives angle from +x; shift so up is 0.
-        const a = Math.atan2(y, x) * 180 / Math.PI; // -180..180, 0 at +x (east)
-        return a + 90;
-      }
-
-      function onMove(ev) {
-        if (!dragging) return;
-        ev.preventDefault();
-        scheduleApply(degFromEvent(ev));
-      }
-
-      function onUp() {
-        dragging = false;
-        document.removeEventListener('mousemove', onMove, true);
-        document.removeEventListener('mouseup', onUp, true);
-      }
-
-      btn.addEventListener('mousedown', (ev) => {
-        ev.preventDefault();
-        dragging = true;
-        document.addEventListener('mousemove', onMove, true);
-        document.addEventListener('mouseup', onUp, true);
-      });
-
-      // Double-click => reset to north
-      btn.addEventListener('dblclick', (ev) => {
-        ev.preventDefault();
-        scheduleApply(0);
-      });
-
-      // Start north (or current bearing if plugin exists)
-      try {
-        if (map && typeof map.getBearing === 'function') {
-          const b = map.getBearing() || 0;
-          scheduleApply(b);
-        } else {
-          scheduleApply(0);
-        }
-      } catch {
-        scheduleApply(0);
-      }
-
-      return container;
-    }
-  });
-
-  const compass = new CompassControl();
-  map.addControl(compass);
-
-  // Put compass to the LEFT of zoom (horizontal row), without changing global CSS.
-  (function groupCompassAndZoom() {
-    const corner = map && map._controlCorners && map._controlCorners.topright;
-    if (!corner) return;
-
-    const compassEl = corner.querySelector('.leaflet-control-compass');
-    const zoomEl = corner.querySelector('.leaflet-control-zoom');
-    if (!compassEl || !zoomEl) return;
-
-    let row = corner.querySelector('.compass-zoom-row');
-    if (!row) {
-      row = L.DomUtil.create('div', 'compass-zoom-row', corner);
-      // Keep row at the top of the corner
-      corner.insertBefore(row, corner.firstChild);
-      row.style.display = 'flex';
-      row.style.gap = '6px';
-      row.style.alignItems = 'stretch';
-      row.style.marginTop = '10px';
-      row.style.marginRight = '10px';
-      row.style.pointerEvents = 'auto';
-    }
-
-    // Remove Leaflet default margins on the controls in this row
-    compassEl.style.margin = '0';
-    zoomEl.style.margin = '0';
-
-    // Order: compass then zoom
-    row.appendChild(compassEl);
-    row.appendChild(zoomEl);
-  })();
-
 })();
