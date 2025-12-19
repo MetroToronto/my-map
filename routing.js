@@ -4,8 +4,8 @@
   const PREFERENCE = 'fastest';
   const ORS_BASE   = 'https://api.openrouteservice.org';
 
-  const COLOR_FIRST  = '#0b3aa5';
-  const COLOR_OTHERS = '#2166f3';
+  const COLOR_FIRST  = '#228B22';
+  const COLOR_OTHERS = '#228B22';
 
   // ORS free-tier assumption: 40 requests / minute
   const MAX_PER_MINUTE = 40;
