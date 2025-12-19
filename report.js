@@ -63,13 +63,11 @@
   }
 
 
-  // Treat generic placeholder names as “no name” so we can snap to a highway centerline.
+  // Treat placeholder names as “no name” so we can snap to highway centerline.
   function isUnnamedLike(name) {
     if (!name) return true;
     const n = normalizeName(name).toLowerCase();
-    // ORS commonly returns placeholders like “Unnamed Road”.
-    if (n.includes('unnamed') || n.includes('unknown')) return true;
-    return false;
+    return (n.includes('unnamed') || n.includes('unknown'));
   }
 
   /******************************************************************
@@ -103,65 +101,54 @@
     }
     await HIGHWAYS_PROMISE;
   }
-
-    function nearestHighwayName(lon, lat) {
+  function nearestHighwayName(lon, lat) {
     if (!HIGHWAYS || !HIGHWAYS.length) return '';
 
-    // Point-to-segment distance squared in lon/lat degrees (good enough for snapping by threshold).
+    // Point-to-segment distance squared (lon/lat degrees).
     function segD2(px, py, ax, ay, bx, by) {
-      const abx = bx - ax;
-      const aby = by - ay;
-      const apx = px - ax;
-      const apy = py - ay;
+      const abx = bx - ax, aby = by - ay;
+      const apx = px - ax, apy = py - ay;
       const abLen2 = abx * abx + aby * aby;
       let t = 0;
       if (abLen2 > 0) t = (apx * abx + apy * aby) / abLen2;
       if (t < 0) t = 0;
       if (t > 1) t = 1;
-      const cx = ax + t * abx;
-      const cy = ay + t * aby;
-      const dx = px - cx;
-      const dy = py - cy;
+      const cx = ax + t * abx, cy = ay + t * aby;
+      const dx = px - cx, dy = py - cy;
       return dx * dx + dy * dy;
-    }
-
-    function scanLine(points, candName) {
-      if (!Array.isArray(points) || points.length < 2) return;
-      for (let i = 0; i < points.length - 1; i++) {
-        const a = points[i];
-        const b = points[i + 1];
-        if (!a || !b || a.length < 2 || b.length < 2) continue;
-        const d2 = segD2(lon, lat, a[0], a[1], b[0], b[1]);
-        if (d2 < bestD2) {
-          bestD2 = d2;
-          bestName = candName;
-        }
-      }
     }
 
     let bestName = '';
     let bestD2 = Infinity;
 
+    function scanLine(coords, candName) {
+      if (!Array.isArray(coords) || coords.length < 2) return;
+      for (let i = 0; i < coords.length - 1; i++) {
+        const a = coords[i], b = coords[i + 1];
+        if (!a || !b || a.length < 2 || b.length < 2) continue;
+        const d2 = segD2(lon, lat, a[0], a[1], b[0], b[1]);
+        if (d2 < bestD2) { bestD2 = d2; bestName = candName; }
+      }
+    }
+
     for (const f of HIGHWAYS) {
       if (!f || !f.geometry) continue;
       const g = f.geometry;
-      const props = f.properties || {};
-      const candName = normalizeName(props.Name || props.name);
+      const p = f.properties || {};
+      const candName = normalizeName(p.Name || p.name);
       if (!candName) continue;
 
-      if (g.type === 'LineString' && Array.isArray(g.coordinates)) {
+      if (g.type === 'LineString') {
         scanLine(g.coordinates, candName);
-      } else if (g.type === 'MultiLineString' && Array.isArray(g.coordinates)) {
-        for (const line of g.coordinates) scanLine(line, candName);
+      } else if (g.type === 'MultiLineString') {
+        for (const line of (g.coordinates || [])) scanLine(line, candName);
       } else if (Array.isArray(g.coordinates)) {
-        // Fallback: try to interpret as a single line
         scanLine(g.coordinates, candName);
       }
     }
 
     const MAX_DEG2 = 0.005 * 0.005; // ~500m
-    if (bestName && bestD2 <= MAX_DEG2) return bestName;
-    return '';
+    return (bestName && bestD2 <= MAX_DEG2) ? bestName : '';
   }
 
       }
@@ -263,13 +250,10 @@
       if (!name || isUnnamedLike(name)) {
         const coords = step.geometry && Array.isArray(step.geometry.coordinates)
           ? step.geometry.coordinates
-          : (Array.isArray(step.way_points_coords) ? step.way_points_coords : null);
+          : null;
 
         if (coords && coords.length) {
-          const startIdx = 0;
-          const endIdx = coords.length - 1;
-          const midIdx = Math.floor(coords.length / 2);
-          const mid = coords[midIdx] || coords[startIdx] || coords[endIdx];
+          const mid = coords[Math.floor(coords.length / 2)] || coords[0];
           if (mid && mid.length >= 2) {
             const hName = nearestHighwayName(mid[0], mid[1]);
             if (hName) name = finalNameCleanup(hName);
@@ -751,18 +735,60 @@
     onAdd: function () {
       const div = L.DomUtil.create('div', 'report-control');
       div.innerHTML = `
-        <div class="routing-header"><strong>Report</strong></div>
-        <div class="routing-row">
-          <button type="button" id="rt-print-report">Print Report</button>
+        <div style="padding:8px;">
+          <button type="button" id="rt-view-report" disabled
+            style="
+              width: 100%;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 14px 12px;
+              border-radius: 14px;
+              border: 1px solid rgba(0,0,0,0.18);
+              font-weight: 700;
+              font-size: 16px;
+              background: #d9d9d9;
+              color: #000;
+              cursor: not-allowed;
+            "
+          >View Report</button>
         </div>
       `;
-      const btn = div.querySelector('#rt-print-report');
+const btn = div.querySelector('#rt-view-report');
+      // Enable the button only after routes have been generated (RoutingCache populated).
+      function isReportReady() {
+        const cache = global.ROUTING_CACHE;
+        return !!(cache && Array.isArray(cache.trips) && cache.trips.length);
+      }
+
+      function setBtnState(ready) {
+        if (!btn) return;
+        if (ready) {
+          btn.disabled = false;
+          btn.style.background = '#228B22'; // forest green
+          btn.style.color = '#fff';
+          btn.style.cursor = 'pointer';
+        } else {
+          btn.disabled = true;
+          btn.style.background = '#d9d9d9';
+          btn.style.color = '#000';
+          btn.style.cursor = 'not-allowed';
+        }
+      }
+
+      // Initial state + keep in sync (routing finishes later; cache may clear on "Clear")
+      setBtnState(isReportReady());
+      const __rtTimer = setInterval(() => {
+        if (!div.isConnected) { clearInterval(__rtTimer); return; }
+        setBtnState(isReportReady());
+      }, 300);
+
       if (btn) {
         btn.addEventListener('click', function (e) {
           e.preventDefault();
           e.stopPropagation();
-          printReport();
-        });
+          if (isReportReady()) { printReport(); }
+          });
       }
       L.DomEvent.disableClickPropagation(div);
       return div;
