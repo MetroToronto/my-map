@@ -100,39 +100,23 @@
     let bestName = '';
     let bestD2 = Infinity;
 
-    function considerPoint(pt, candName) {
-      if (!Array.isArray(pt) || pt.length < 2) return;
-      const x = pt[0], y = pt[1];
-      if (!isFiniteNum(x) || !isFiniteNum(y)) return;
-      const dx = x - lon;
-      const dy = y - lat;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < bestD2) {
-        bestD2 = d2;
-        bestName = candName;
-      }
-    }
-
-    // Supports LineString + MultiLineString + nested coordinate arrays
-    function walkCoords(arr, candName) {
-      if (!Array.isArray(arr)) return;
-
-      // Coordinate pair [lon, lat]
-      if (arr.length >= 2 && typeof arr[0] === 'number' && typeof arr[1] === 'number') {
-        considerPoint(arr, candName);
-        return;
-      }
-
-      for (const sub of arr) walkCoords(sub, candName);
-    }
-
     for (const f of HIGHWAYS) {
       if (!f || !f.geometry || !Array.isArray(f.geometry.coordinates)) continue;
+      const coords = f.geometry.coordinates;
       const props = f.properties || {};
       const candName = normalizeName(props.Name || props.name);
       if (!candName) continue;
 
-      walkCoords(f.geometry.coordinates, candName);
+      for (const c of coords) {
+        if (!Array.isArray(c) || c.length < 2) continue;
+        const dx = c[0] - lon;
+        const dy = c[1] - lat;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestName = candName;
+        }
+      }
     }
 
     const MAX_DEG2 = 0.005 * 0.005; // ~500m
@@ -553,9 +537,23 @@
 
     return cache.trips.map(trip => {
       const isPD  = trip.type === 'PD';
-      const title = isPD
-        ? (trip.name || trip.key || 'Planning District')
-        : (trip.label || 'Planning Zone');
+
+      // Use dataset properties for display names
+      const pdName =
+        (trip.properties && trip.properties.PD_name != null)
+          ? String(trip.properties.PD_name).trim()
+          : String(trip.name || trip.key || 'Planning District').trim();
+
+      const tzNum =
+        (trip.properties && trip.properties.TTS2022 != null)
+          ? String(trip.properties.TTS2022).trim()
+          : (trip.key != null ? String(trip.key).trim()
+              : (trip.id != null ? String(trip.id).trim() : ''));
+
+      const tzName = tzNum ? ('TZ ' + tzNum) : 'TZ';
+
+      // Card title: PD_name OR "TZ ####"
+      const title = isPD ? pdName : tzName;
 
       const originLabel = trip.origin && (trip.origin.label ||
         `${trip.origin.lon}, ${trip.origin.lat}`) || '';
@@ -563,45 +561,29 @@
       const { address: originAddr, postal: originPostal } =
         parseOriginLabel(originLabel);
 
-      let areaLabel = '';
-      let cityText = '';
-      let areaNum = '';
-      let cityBare = '';
+      const originText = originAddr
+        ? `${originAddr}${originPostal ? ', ' + originPostal : ''}`
+        : originLabel;
 
-      if (isPD) {
-        const meta = pdCityMetaFromTitle(title);
-        areaLabel = meta.label;       // "PD 1"
-        cityText  = meta.cityText;    // "City of Toronto"
-        areaNum   = meta.num || '';   // "1"
-        cityBare  = meta.cityBare;    // "Toronto"
-      } else {
-        const num = trip.key != null ? String(trip.key) :
-                    (trip.id != null ? String(trip.id) : '');
-        areaNum   = num;
-        areaLabel = num ? ('PZ ' + num) : 'PZ';
+      const targetText = isPD ? pdName : tzName;
 
-        const cityNameRaw = trip.label || title;
-        cityBare = cityNameRaw.replace(/^(City|Town|Region|County)\s+of\s+/i, '').trim();
-        let displayName = cityNameRaw;
-        if (!/^(City|Town|Region|County)\s+of\s+/i.test(cityNameRaw)) {
-          displayName = 'City of ' + cityNameRaw;
-        }
-        cityText = displayName;
-      }
+      // From/To swap only when reverse was selected at routing time
+      const fromLine = trip.reverse
+        ? `From: ${targetText}`
+        : (originText ? `From: ${originText}` : '');
 
-      const fromLine = originAddr
-        ? `From: ${originAddr}${originPostal ? ', ' + originPostal : ''}`
-        : '';
-      const toLine = `To: ${areaLabel}${cityText ? ', ' + cityText : ''}`;
+      const toLine = trip.reverse
+        ? (originText ? `To: ${originText}` : '')
+        : `To: ${targetText}`;
 
       const tableHtml = buildTablesForTrip(trip);
       if (!tableHtml) return '';
 
       return `
         <div class="card"
-             data-area-type="${isPD ? 'PD' : 'PZ'}"
-             data-area-num="${escapeHtml(areaNum)}"
-             data-area-city="${escapeHtml(cityBare)}">
+             data-area-type="${isPD ? \'PD\' : \'TZ\'}"
+             data-pd-name="${escapeHtml(pdName)}"
+             data-tts2022="${escapeHtml(tzNum)}">
           <h2>${escapeHtml(title)}</h2>
           ${fromLine ? `<p class="meta-line">${escapeHtml(fromLine)}</p>` : ''}
           ${toLine ? `<p class="meta-line">${escapeHtml(toLine)}</p>` : ''}
@@ -636,21 +618,48 @@
       if (t && t.type === 'PZ') hasPZ = true;
     }
     let targetLabel;
-    if (hasPD && !hasPZ) targetLabel = 'Planning Districts';
-    else if (!hasPD && hasPZ) targetLabel = 'Traffic Zones';
-    else targetLabel = 'Planning Districts / Traffic Zones';
 
-    const originObj = global.ROUTING_ORIGIN || {};
-    const originLabel =
-      originObj.label || originObj.name || originObj.address ||
-      originObj.query || 'selected origin';
+    // Determine routing direction based on cached trips (reverse checkbox when generating trips)
+    const trips = (cache.trips || []).filter(Boolean);
+    const anyReverse = trips.some(t => !!t.reverse);
 
-    const originParsed = parseOriginLabel(originLabel);
-    const originShort = originParsed.address || originLabel;
+    // Helpers to read dataset properties
+    const getPDName = (t) => (t && t.properties && t.properties.PD_name) ? String(t.properties.PD_name).trim() : '';
+    const getTTS    = (t) => (t && t.properties && (t.properties.TTS2022 != null)) ? String(t.properties.TTS2022).trim() : '';
 
-    const title = `Trip Route Distribution for ${originShort} to ${targetLabel}`;
+    const pdTrips = trips.filter(t => t.type === 'PD');
+    const tzTrips = trips.filter(t => t.type !== 'PD');
 
-    const css = `
+    if (hasPD && !hasPZ) {
+      // PD trips: if only one PD, show its PD_name; otherwise keep plural label
+      const pdNames = pdTrips.map(getPDName).filter(Boolean);
+      const uniquePD = Array.from(new Set(pdNames));
+      targetLabel = (uniquePD.length === 1) ? uniquePD[0] : 'Planning Districts';
+    } else if (!hasPD && hasPZ) {
+      // TZ trips:
+      const tzNums = tzTrips.map(getTTS).filter(Boolean);
+      const uniqueTZ = Array.from(new Set(tzNums));
+
+      const tzPdNames = tzTrips.map(getPDName).filter(Boolean);
+      const uniqueTZPD = Array.from(new Set(tzPdNames));
+
+      if (uniqueTZ.length === 1) {
+        // Single TZ selection
+        targetLabel = `Traffic Zone TZ ${uniqueTZ[0]}`;
+      } else if (uniqueTZPD.length === 1 && uniqueTZ.length > 1) {
+        // TZs generated inside a PD
+        targetLabel = `Traffic Zones in (${uniqueTZPD[0]})`;
+      } else {
+        targetLabel = 'Traffic Zones';
+      }
+    } else {
+      targetLabel = 'Planning Districts / Traffic Zones';
+    }
+
+    const title = anyReverse
+      ? `Trip Route Distribution for ${targetLabel} to ${originShort}`
+      : `Trip Route Distribution for ${originShort} to ${targetLabel}`;
+const css = `
       <style>
         * { box-sizing: border-box; }
         body {
@@ -776,12 +785,11 @@
           'alert("Copied trip routes. Paste directly into Excel or Sheets.");' +
         '}' +
 
-        'if(copyBtn){copyBtn.addEventListener("click",function(){' +
-          'var rows=[];' +
+        'if(copyBtn){copyBtn.addEventListener("click",function(){' +          'var rows=[];' +          'var hasTZ=!!doc.querySelector(".card[data-area-type=\\"TZ\\"]");' +
           'var cards=doc.querySelectorAll(".card");' +
           'cards.forEach(function(card){' +
-            'var areaNum=card.getAttribute("data-area-num")||"";' +
-            'var cityBare=card.getAttribute("data-area-city")||"";' +
+            'var areaType=card.getAttribute("data-area-type")||"";' +'var pdName=card.getAttribute("data-pd-name")||"";' +'var tts2022=card.getAttribute("data-tts2022")||"";' +
+            
             'var trs=card.querySelectorAll("tbody tr");' +
             'trs.forEach(function(tr){' +
               'var tds=tr.querySelectorAll("td");' +
@@ -791,11 +799,11 @@
               'var desc=descCell.getAttribute("data-desc")||descCell.innerText.trim();' +
               'var totalKm=tds[2].innerText.trim();' +
               'var totalMin=tds[3].innerText.trim();' +
-              'rows.push([areaNum,cityBare,tripDir,desc,totalKm,totalMin]);' +
+              'if(hasTZ && areaType==="TZ"){rows.push([pdName,tts2022,tripDir,desc,totalKm,totalMin]);}else{rows.push([pdName,tripDir,desc,totalKm,totalMin]);}' +
             '});' +
           '});' +
           'if(!rows.length){alert("No trip rows to copy.");return;}' +
-          'var header=["Area","City","Trip dir","Street-by-street","Total km","Total min"];' +
+          'var header=hasTZ?["PD_name","TTS2022","Trip dir","Street-by-street","Total km","Total min"]:["PD_name","Trip dir","Street-by-street","Total km","Total min"];' +
           'var lines=[header].concat(rows).map(function(r){' +
             'return r.map(function(v){return String(v==null?"":v);}).join("\\t");' +  // TAB-separated
           '});' +
@@ -824,60 +832,18 @@
     onAdd: function () {
       const div = L.DomUtil.create('div', 'report-control');
       div.innerHTML = `
-        <div style="padding:8px;">
-          <button type="button" id="rt-view-report" disabled
-            style="
-              width: 100%;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              padding: 14px 12px;
-              border-radius: 14px;
-              border: 1px solid rgba(0,0,0,0.18);
-              font-weight: 700;
-              font-size: 16px;
-              background: #d9d9d9;
-              color: #000;
-              cursor: not-allowed;
-            "
-          >View Report</button>
+        <div class="routing-header"><strong>Report</strong></div>
+        <div class="routing-row">
+          <button type="button" id="rt-print-report">Print Report</button>
         </div>
       `;
-const btn = div.querySelector('#rt-view-report');
-      // Enable the button only after routes have been generated (RoutingCache populated).
-      function isReportReady() {
-        const cache = global.ROUTING_CACHE;
-        return !!(cache && Array.isArray(cache.trips) && cache.trips.length);
-      }
-
-      function setBtnState(ready) {
-        if (!btn) return;
-        if (ready) {
-          btn.disabled = false;
-          btn.style.background = '#228B22'; // forest green
-          btn.style.color = '#fff';
-          btn.style.cursor = 'pointer';
-        } else {
-          btn.disabled = true;
-          btn.style.background = '#d9d9d9';
-          btn.style.color = '#000';
-          btn.style.cursor = 'not-allowed';
-        }
-      }
-
-      // Initial state + keep in sync (routing finishes later; cache may clear on "Clear")
-      setBtnState(isReportReady());
-      const __rtTimer = setInterval(() => {
-        if (!div.isConnected) { clearInterval(__rtTimer); return; }
-        setBtnState(isReportReady());
-      }, 300);
-
+      const btn = div.querySelector('#rt-print-report');
       if (btn) {
         btn.addEventListener('click', function (e) {
           e.preventDefault();
           e.stopPropagation();
-          if (isReportReady()) { printReport(); }
-          });
+          printReport();
+        });
       }
       L.DomEvent.disableClickPropagation(div);
       return div;
