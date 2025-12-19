@@ -144,7 +144,7 @@
 
   const PD_BASE_STYLE = {
     color: '#ffb347',      // light orange border
-    weight: 2,
+    weight: 1.5,
     opacity: 0.95,
     fillColor: '#ffd7a8',  // light orange fill
     fillOpacity: 0.22
@@ -152,7 +152,7 @@
 
   const PD_SELECTED_STYLE = {
     color: '#ff3b30',
-    weight: 3,
+    weight: 5,
     opacity: 1,
     fillColor: '#ff3b30',
     fillOpacity: 0.30
@@ -245,7 +245,9 @@ if (!show || hideBecauseZones) {
 
     reg.layer.setStyle(willSelect ? PD_SELECTED_STYLE : PD_BASE_STYLE);
 
-    // Sync checkbox if present
+    
+    if (state && reg.layer.bringToFront) reg.layer.bringToFront();
+// Sync checkbox if present
     if (pdListEl) {
       const row = pdListEl.querySelector(`.pd-item[data-key="${encodeURIComponent(key)}"]`);
       const cbx = row ? row.querySelector('.pd-cbx') : null;
@@ -577,13 +579,13 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_SELECTED_STYLE = {
     color: '#0b5fff',
-    weight: 3,
+    weight: 5,
     opacity: 1,
     fillColor: '#0b5fff',
     fillOpacity: 0.10
   };
 
-  const PZ_LABEL_MIN_ZOOM = 10;
+  const PZ_LABEL_MIN_ZOOM = 11;
   const PZ_LABEL_MIN_FS   = 10;
   const PZ_LABEL_MAX_FS   = 15;
 
@@ -648,7 +650,9 @@ nameEl.addEventListener('click', clickHandler);
     selectedZoneLayer = layer;
     if (selectedZoneLayer) selectedZoneLayer.setStyle(ZONE_SELECTED_STYLE);
 
-    // Selecting a zone clears all PD selections (list + map)
+    
+    if (selectedZoneLayer && selectedZoneLayer.bringToFront) selectedZoneLayer.bringToFront();
+// Selecting a zone clears all PD selections (list + map)
     clearAllPDSelection(true);
 
     scheduleLabelUpdate();
