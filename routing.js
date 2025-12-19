@@ -802,7 +802,8 @@
   }
 
 
-  // Overlay for “routing complete”
+
+  // Overlay for “Trip Distribution Complete!” (match style of single-PD popup)
   function showTripCompletePopup() {
     const existing = document.getElementById('routing-complete-overlay');
     if (existing) existing.remove();
@@ -822,13 +823,13 @@
     box.style.padding = '16px 20px';
     box.style.borderRadius = '8px';
     box.style.maxWidth = '520px';
-    box.style.width = '92%';
+    box.style.width = '90%';
     box.style.boxShadow = '0 8px 20px rgba(0,0,0,0.25)';
     box.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     box.innerHTML = `
-      <h2 style="margin:0 0 10px 0;font-size:26px;font-weight:800;">Trip Distribution Complete!</h2>
-      <p style="margin:0 0 14px 0;font-size:0.98em;line-height:1.35;">
-        All requested routes have been generated.
+      <h3 style="margin:0 0 8px 0;">Trip Distribution Complete!</h3>
+      <p style="margin:0 0 12px 0;font-size:0.95em;">
+        All requested routes have been generated successfully.
       </p>
       <div style="text-align:right;">
         <button id="routing-complete-close">Close</button>
@@ -844,7 +845,6 @@
       if (e.target === backdrop) backdrop.remove();
     });
   }
-
 
 // ===== Button state =====
   function setBusy(mode, busy) {
@@ -960,9 +960,9 @@
         reverse,
         trips: S.lastTrips
       };
-
+    
       showTripCompletePopup();
-    } catch (e) {
+} catch (e) {
       console.error(e);
       if (e.type === 'validation') {
         showValidationPopup(e.invalid);
@@ -1077,9 +1077,9 @@
         reverse,
         trips: S.lastTrips
       };
-
+    
       showTripCompletePopup();
-    } catch (e) {
+} catch (e) {
       console.error(e);
       if (e.code === 'NO_ORIGIN') {
         showNoOriginPopup();
