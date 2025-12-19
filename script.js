@@ -31,6 +31,18 @@
     if (L.DomEvent.disableScrollPropagation) L.DomEvent.disableScrollPropagation(el);
   }
 
+  // Force origin search bar (geocoder) to the TOP of the top-left control stack
+  function forceGeocoderTopLeft() {
+    const left = document.querySelector('.leaflet-top.leaflet-left');
+    if (!left) return false;
+    const geocoderEl = document.querySelector('.leaflet-control-geocoder');
+    if (!geocoderEl) return false;
+    // Move geocoder into top-left and make it the first control
+    left.insertBefore(geocoderEl, left.firstChild);
+    return true;
+  }
+
+
   function safeJSONParse(txt, label) {
     try { return JSON.parse(txt); }
     catch (e) {
@@ -203,7 +215,7 @@ const PD_LABEL_MAX_INCREASE = 0.40;  // +40% max at max zoom
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, zoom - PD_LABEL_MIN_ZOOM);
     const scaleCap = PD_LABEL_MAX_FS / PD_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.40, dz), scaleCap); // ~18% per zoom level
+    const scale = Math.min(Math.pow(1.4, dz), scaleCap); // ~18% per zoom level
     const fs = PD_LABEL_MIN_FS * scale;
     return clamp(fs, PD_LABEL_MIN_FS, PD_LABEL_MAX_FS);
   }
@@ -313,7 +325,8 @@ if (!show || hideBecauseZones) {
             <button type="button" id="pd-select-all">Select all</button>
             <button type="button" id="pd-clear-all">Clear all</button>
             <button type="button" id="pd-toggle" class="grow">Collapse ▴</button>
-          </div>
+                    <input id=\"pz-search\" class=\"tz-search\" type=\"text\" placeholder=\"Zone #\" />
+        </div>
           <div class="pd-list" id="pd-list"></div>
         `;
 
@@ -624,7 +637,7 @@ nameEl.addEventListener('click', clickHandler);
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, z - PZ_LABEL_MIN_ZOOM);
     const scaleCap = PZ_LABEL_MAX_FS / PZ_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.80, dz), scaleCap); // ~14% per zoom level
+    const scale = Math.min(Math.pow(1.8, dz), scaleCap); // ~14% per zoom level
     const fs = PZ_LABEL_MIN_FS * scale;
     return clamp(fs, PZ_LABEL_MIN_FS, PZ_LABEL_MAX_FS);
   }
@@ -1030,6 +1043,7 @@ let c = null;
 
   // --------------------- Address search (geocoder) ---------------------
   const geocoder = L.Control.geocoder({
+    position: 'topleft',
     defaultMarkGeocode: false,
     placeholder: 'Search...'
   }).on('markgeocode', function (e) {
@@ -1081,4 +1095,16 @@ let c = null;
     if (tryReorder()) return;
     setTimeout(reorderLoop, 120);
   })();
+
+  // Re-run a few times in case controls load in slightly later
+  (function pinGeocoder() {
+    let tries = 0;
+    function tick() {
+      tries += 1;
+      if (forceGeocoderTopLeft() || tries > 20) return;
+      setTimeout(tick, 120);
+    }
+    tick();
+  })();
+
 })();
