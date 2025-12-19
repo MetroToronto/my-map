@@ -536,23 +536,20 @@
     if (!cache || !Array.isArray(cache.trips) || !cache.trips.length) return '';
 
     return cache.trips.map(trip => {
-      const isPD  = trip.type === 'PD';
+      const isPD = trip.type === 'PD';
+      const props = (trip && trip.properties) ? trip.properties : {};
 
-      // Use dataset properties (preferred)
-      const props = trip.properties || {};
-      const pdName = String(props.PD_name || trip.name || trip.key || 'Planning District').trim();
-
-      const tzNumRaw = (props.TTS2022 != null)
-        ? props.TTS2022
-        : (trip.TTS2022 != null ? trip.TTS2022 : (trip.key != null ? trip.key : trip.id));
+      // Use dataset properties when available
+      const pdName = normalizeName(props.PD_name) || normalizeName(trip.name || trip.key) || 'Planning District';
+      const tzNumRaw = (props.TTS2022 != null ? props.TTS2022 : (trip.key != null ? trip.key : trip.id));
       const tzNum = (tzNumRaw == null ? '' : String(tzNumRaw).trim());
-      const tzLabel = tzNum ? ('TZ ' + tzNum) : 'TZ';
+      const tzName = tzNum ? ('TZ ' + tzNum) : 'TZ';
 
-      // Section title
-      const title = isPD ? pdName : tzLabel;
+      // Card display title
+      const title = isPD ? pdName : tzName;
 
-      const originLabel = trip.origin && (trip.origin.label ||
-        `${trip.origin.lon}, ${trip.origin.lat}`) || '';
+      const originLabel = (trip && trip.origin && (trip.origin.label ||
+        `${trip.origin.lon}, ${trip.origin.lat}`)) || '';
 
       const { address: originAddr, postal: originPostal } =
         parseOriginLabel(originLabel);
@@ -561,16 +558,16 @@
         ? `${originAddr}${originPostal ? ', ' + originPostal : ''}`
         : originLabel;
 
-      const targetText = isPD ? pdName : tzLabel;
+      const targetText = isPD ? pdName : tzName;
 
-      // Swap only when reverse was used
+      // Reverse direction swaps From/To only (tables already handle heading via trip.reverse)
       const fromLine = trip.reverse
-        ? `From: ${targetText}`
+        ? (targetText ? `From: ${targetText}` : '')
         : (originText ? `From: ${originText}` : '');
 
       const toLine = trip.reverse
         ? (originText ? `To: ${originText}` : '')
-        : `To: ${targetText}`;
+        : (targetText ? `To: ${targetText}` : '');
 
       const tableHtml = buildTablesForTrip(trip);
       if (!tableHtml) return '';
@@ -579,7 +576,7 @@
         <div class="card"
              data-area-type="${isPD ? 'PD' : 'TZ'}"
              data-pd-name="${escapeHtml(pdName)}"
-             data-tz-num="${escapeHtml(tzNum)}">
+             data-tts2022="${escapeHtml(isPD ? '' : tzNum)}">
           <h2>${escapeHtml(title)}</h2>
           ${fromLine ? `<p class="meta-line">${escapeHtml(fromLine)}</p>` : ''}
           ${toLine ? `<p class="meta-line">${escapeHtml(toLine)}</p>` : ''}
@@ -590,6 +587,7 @@
   }
 
   /******************************************************************
+   * Print / open report  /******************************************************************
    * Print / open report
    ******************************************************************/
   async function printReport() {
@@ -605,65 +603,60 @@
     if (!cardsHtml) {
       alert('Unable to build report. Trip data is missing or incomplete.');
       return;
-    }
-
-    // Determine whether these are PD or PZ trips
-    let hasPD = false, hasPZ = false;
+    }    // Determine whether these are PD or TZ trips
+    let hasPD = false, hasTZ = false;
     for (const t of cache.trips) {
       if (t && t.type === 'PD') hasPD = true;
-      if (t && t.type === 'PZ') hasPZ = true;
+      if (t && (t.type === 'PZ' || t.type === 'TZ')) hasTZ = true;
     }
-    let targetLabel;
-    if (hasPD && !hasPZ) targetLabel = 'Planning Districts';
-    else if (!hasPD && hasPZ) targetLabel = 'Traffic Zones';
-    else targetLabel = 'Planning Districts / Traffic Zones';
 
+    const trips = cache.trips || [];
+    const anyReverse = trips.some(t => !!t.reverse);
+
+    // Gather property-driven names for nicer titles
+    const pdNames = trips
+      .filter(t => t && t.type === 'PD')
+      .map(t => normalizeName((t.properties && t.properties.PD_name) || t.name || t.key))
+      .filter(Boolean);
+
+    const tzNums = trips
+      .filter(t => t && (t.type === 'PZ' || t.type === 'TZ'))
+      .map(t => (t.properties && t.properties.TTS2022) != null ? t.properties.TTS2022 : t.key)
+      .map(v => (v == null ? '' : String(v).trim()))
+      .filter(Boolean);
+
+    const tzPdNames = trips
+      .filter(t => t && (t.type === 'PZ' || t.type === 'TZ'))
+      .map(t => normalizeName((t.properties && t.properties.PD_name) || ''))
+      .filter(Boolean);
+
+    const uniquePD = Array.from(new Set(pdNames));
+    const uniqueTZ = Array.from(new Set(tzNums));
+    const uniqueTZPD = Array.from(new Set(tzPdNames));
+
+    let targetLabel;
+    if (hasPD && !hasTZ) {
+      targetLabel = (uniquePD.length === 1)
+        ? `Planning Districts (${uniquePD[0]})`
+        : 'Planning Districts';
+    } else if (!hasPD && hasTZ) {
+      if (uniqueTZ.length === 1) {
+        targetLabel = `Traffic Zone TZ ${uniqueTZ[0]}`;
+      } else if (uniqueTZPD.length === 1) {
+        targetLabel = `Traffic Zones in (${uniqueTZPD[0]})`;
+      } else {
+        targetLabel = 'Traffic Zones';
+      }
+    } else {
+      targetLabel = 'Planning Districts / Traffic Zones';
+    }
     const originObj = global.ROUTING_ORIGIN || {};
     const originLabel =
       originObj.label || originObj.name || originObj.address ||
       originObj.query || 'selected origin';
 
     const originParsed = parseOriginLabel(originLabel);
-    const originShort = originParsed.address || originLabel;
-
-    // Build a detailed title using dataset properties
-    const trips = cache.trips || [];
-    const anyReverse = trips.some(t => !!t.reverse);
-    
-    const pdNames = trips
-      .filter(t => t && t.type === 'PD')
-      .map(t => String((t.properties && t.properties.PD_name) || t.name || t.key || '').trim())
-      .filter(Boolean);
-    
-    const tzNums = trips
-      .filter(t => t && t.type !== 'PD')
-      .map(t => (t.properties && t.properties.TTS2022) != null ? (t.properties && t.properties.TTS2022) : (t.TTS2022 != null ? t.TTS2022 : (t.key != null ? t.key : t.id)))
-      .map(v => v == null ? '' : String(v).trim())
-      .filter(Boolean);
-    
-    const tzPdNames = trips
-      .filter(t => t && t.type !== 'PD')
-      .map(t => String((t.properties && t.properties.PD_name) || '').trim())
-      .filter(Boolean);
-    
-    const uniquePD = Array.from(new Set(pdNames));
-    const uniqueTZ = Array.from(new Set(tzNums));
-    const uniqueTZPD = Array.from(new Set(tzPdNames));
-    
-    // Override generic label with a more specific one
-    if (hasPD && !hasPZ) {
-      targetLabel = (uniquePD.length === 1) ? uniquePD[0] : 'Planning Districts';
-    } else if (!hasPD && hasPZ) {
-      if (uniqueTZ.length === 1) {
-        targetLabel = `Traffic Zone TZ ${uniqueTZ[0]}`;
-      } else if (uniqueTZPD.length === 1 && uniqueTZ.length > 1) {
-        targetLabel = `Traffic Zones in (${uniqueTZPD[0]})`;
-      } else {
-        targetLabel = 'Traffic Zones';
-      }
-    }
-    
-    const title = anyReverse
+    const originShort = originParsed.address || originLabel;    const title = anyReverse
       ? `Trip Route Distribution for ${targetLabel} to ${originShort}`
       : `Trip Route Distribution for ${originShort} to ${targetLabel}`;
 
@@ -794,24 +787,37 @@
         '}' +
 
         'if(copyBtn){copyBtn.addEventListener("click",function(){' +
-          'var rows=[];var hasTZ=!!doc.querySelector(".card[data-area-type=\"TZ\"]");' +
+          'var rows=[];' +
           'var cards=doc.querySelectorAll(".card");' +
           'cards.forEach(function(card){' +
-            'var pdName=card.getAttribute("data-pd-name")||"";' +'var tzNum=card.getAttribute("data-tz-num")||"";' +
+            'var areaNum=card.getAttribute("data-area-num")||"";' +
+            'var cityBare=card.getAttribute("data-area-city")||"";' +
             'var trs=card.querySelectorAll("tbody tr");' +
             'trs.forEach(function(tr){' +
               'var tds=tr.querySelectorAll("td");' +
               'if(tds.length<4)return;' +
-              'var tripDir=tds[0].innerText.trim();' +
+              '              var areaType=card.getAttribute("data-area-type")||"";
+              var pdName=card.getAttribute("data-pd-name")||"";
+              var tts=card.getAttribute("data-tts2022")||"";
+              var tripDir=tds[0].innerText.trim();
+' +
               'var descCell=tds[1];' +
               'var desc=descCell.getAttribute("data-desc")||descCell.innerText.trim();' +
               'var totalKm=tds[2].innerText.trim();' +
               'var totalMin=tds[3].innerText.trim();' +
-              'if(hasTZ){rows.push([pdName,tzNum,tripDir,desc,totalKm,totalMin]);}else{rows.push([pdName,tripDir,desc,totalKm,totalMin]);}' +
+              'if(areaType==="TZ"){
+                rows.push([pdName,tts,tripDir,desc,totalKm,totalMin]);
+              }else{
+                rows.push([pdName,tripDir,desc,totalKm,totalMin]);
+              }
+' +
             '});' +
           '});' +
           'if(!rows.length){alert("No trip rows to copy.");return;}' +
-          'var header=hasTZ?["PD_name","TTS2022","Trip dir","Street-by-street","Total km","Total min"]:["PD_name","Trip dir","Street-by-street","Total km","Total min"];' +
+          'var hasTZ=!!doc.querySelector('.card[data-area-type="TZ"]');
+          var header=hasTZ
+            ?["PD_name","TTS2022","Trip dir","Street-by-street","Total km","Total min"]
+            :["PD_name","Trip dir","Street-by-street","Total km","Total min"];' +
           'var lines=[header].concat(rows).map(function(r){' +
             'return r.map(function(v){return String(v==null?"":v);}).join("\\t");' +  // TAB-separated
           '});' +
