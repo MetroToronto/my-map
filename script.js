@@ -268,7 +268,9 @@ if (!show || hideBecauseZones) {
   }
 
   function handlePDClick(key, additive) {
-    if (!additive) {
+    // Selecting a PD clears any selected Traffic Zone
+    clearSelectedZone();
+if (!additive) {
       // single-select behavior:
       // - if this is the only selected PD already, toggle it OFF (for list checkbox usability)
       // - otherwise clear others and select this
@@ -585,12 +587,17 @@ nameEl.addEventListener('click', clickHandler);
     fillOpacity: 0.10
   };
 
-  const PZ_LABEL_MIN_ZOOM = 11;
+  const PZ_LABEL_MIN_ZOOM = 12;
   const PZ_LABEL_MIN_FS   = 10;
   const PZ_LABEL_MAX_FS   = 15;
 
   const pzLabelMarkers = new Map(); // zoneKey -> marker
   let selectedZoneLayer = null;
+  let selectedZoneKey = null;            // persistent selected zone id (TTS2022)
+  let selectedZoneFeature = null;        // GeoJSON feature for the selected zone
+  let selectedZonePersistLayer = null;   // Leaflet layer showing selected zone even when zones are disengaged
+  const selectedZoneGroup = L.featureGroup().addTo(map);
+
 
   function pzLabelFontSize(z) {
     const fs = PZ_LABEL_MIN_FS + (z - PZ_LABEL_MIN_ZOOM) * 1.0;
@@ -634,18 +641,78 @@ nameEl.addEventListener('click', clickHandler);
     }
   }
 
-  function clearZoneSelection() {
-    if (selectedZoneLayer) selectedZoneLayer.setStyle(ZONE_BASE_STYLE);
+  function clearSelectedZone() {
+    // Clear highlight within current zone layer
+    if (selectedZoneLayer) {
+      try { selectedZoneLayer.setStyle(ZONE_BASE_STYLE); } catch {}
+    }
     selectedZoneLayer = null;
+
+    // Clear persistent selected zone overlay
+    if (selectedZonePersistLayer) {
+      try { selectedZoneGroup.removeLayer(selectedZonePersistLayer); } catch {}
+    }
+    selectedZonePersistLayer = null;
+
+    selectedZoneKey = null;
+    selectedZoneFeature = null;
+
     try { map.closePopup(); } catch {}
     updatePZLabels();
   }
 
+  function setPersistentSelectedZone(feature) {
+    selectedZoneFeature = feature || null;
+    selectedZoneKey = feature ? String(zoneKeyFromProps(feature.properties || {})).trim() : null;
+
+    if (selectedZonePersistLayer) {
+      try { selectedZoneGroup.removeLayer(selectedZonePersistLayer); } catch {}
+      selectedZonePersistLayer = null;
+    }
+    if (!selectedZoneFeature) return;
+
+    selectedZonePersistLayer = L.geoJSON(selectedZoneFeature, {
+      interactive: true,
+      style: ZONE_SELECTED_STYLE
+    });
+
+    selectedZonePersistLayer.on('click', () => {
+      clearSelectedZone();
+    });
+
+    selectedZonePersistLayer.addTo(selectedZoneGroup);
+    try { selectedZonePersistLayer.bringToFront(); } catch {}
+  }
+
   function selectZone(layer) {
-    if (selectedZoneLayer === layer) {
-      clearZoneSelection();
+    const zKey = String(zoneKeyFromProps((layer && layer.feature && layer.feature.properties) || {})).trim();
+
+    if (selectedZoneKey && zKey === selectedZoneKey) {
+      clearSelectedZone();
       return;
     }
+
+    if (selectedZoneLayer) {
+      try { selectedZoneLayer.setStyle(ZONE_BASE_STYLE); } catch {}
+    }
+
+    selectedZoneLayer = layer;
+    if (selectedZoneLayer) {
+      try { selectedZoneLayer.setStyle(ZONE_SELECTED_STYLE); } catch {}
+      if (selectedZoneLayer.bringToFront) selectedZoneLayer.bringToFront();
+    }
+
+    if (layer && layer.feature) {
+      setPersistentSelectedZone(layer.feature);
+    }
+
+    // Selecting a zone clears all PD selections (list + map)
+    clearAllPDSelection(true);
+
+    scheduleLabelUpdate();
+    updatePZLabels();
+  }
+
     if (selectedZoneLayer) selectedZoneLayer.setStyle(ZONE_BASE_STYLE);
     selectedZoneLayer = layer;
     if (selectedZoneLayer) selectedZoneLayer.setStyle(ZONE_SELECTED_STYLE);
@@ -661,6 +728,7 @@ nameEl.addEventListener('click', clickHandler);
 
   // Map from PD key -> array of zone features inside it (precomputed from properties if available)
   const zonesByKey = new Map(); // pdKey -> features
+  const zonesById = new Map();  // TTS2022 -> feature (for search + persistent selection)
   let activeZonePDKey = null;      // PD key currently showing zones for
   let currentZonesLayer = null;    // L.GeoJSON layer for active PD
 
@@ -696,8 +764,9 @@ nameEl.addEventListener('click', clickHandler);
     zoneGroup.clearLayers();
     pzLabelGroup.clearLayers();
     pzLabelMarkers.clear();
-    clearZoneSelection();
-  }
+  
+    selectedZoneLayer = null;
+}
 
   function showZonesForPD(pdKey) {
     if (!zonesEngaged) return;
@@ -713,8 +782,6 @@ nameEl.addEventListener('click', clickHandler);
     zoneGroup.clearLayers();
     pzLabelGroup.clearLayers();
     pzLabelMarkers.clear();
-    clearZoneSelection();
-
     const feats = zonesByKey.get(key) || [];
     if (!feats.length) {
       scheduleLabelUpdate();
@@ -745,7 +812,7 @@ let c = null;
             icon: L.divIcon({
               className: '',
               html: `<div class="map-label pz-label" data-pz="${encodeURIComponent(zKeySafe)}">TZ ${zKeySafe}</div>`,
-              iconSize: [0, 0]
+              iconSize: [1, 1]
             })
           }).addTo(pzLabelGroup);
           pzLabelMarkers.set(zKeySafe, marker);
@@ -827,16 +894,38 @@ let c = null;
   if (inpZoneSearch) {
     inpZoneSearch.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
-      const q = (inpZoneSearch.value || '').trim();
-      if (!q) return;
+      const qRaw = (inpZoneSearch.value || '').trim();
+      if (!qRaw) return;
 
-      // Find a zone label marker by key and zoom to it
-      const marker = pzLabelMarkers.get(q);
-      if (marker) {
-        map.setView(marker.getLatLng(), Math.max(map.getZoom(), PZ_LABEL_MIN_ZOOM));
-      } else {
-        alert('Zone not found: ' + q);
+      // Accept inputs like "1006" or "TZ 1006"
+      const m = String(qRaw).match(/(\d{3,6})/);
+      const q = m ? m[1] : qRaw;
+
+      const f = (typeof zonesById !== 'undefined') ? zonesById.get(String(q)) : null;
+      if (!f) {
+        alert('Zone not found: ' + qRaw);
+        return;
       }
+
+      // Persist selection even if zones are disengaged
+      setPersistentSelectedZone(f);
+      clearAllPDSelection(true);
+
+      // Zoom to it
+      try {
+        const tmp = L.geoJSON(f);
+        const b = tmp.getBounds();
+        if (b && b.isValid && b.isValid()) map.fitBounds(b.pad(0.15));
+      } catch {}
+
+      // If zones are engaged, show zones for the containing PD so labels/context appear
+      if (zonesEngaged) {
+        const pdKey = String((f.properties && (f.properties.PD_no ?? f.properties.pd_no)) ?? '');
+        if (pdKey) showZonesForPD(pdKey);
+      }
+
+      scheduleLabelUpdate();
+      updatePZLabels();
     });
   }
 
@@ -853,6 +942,7 @@ let c = null;
       // Build zone entries (feature + center + key). We'll spatially assign zones to PDs
       // using zone centers (bounds center) inside PD polygons (with PD bounds prefilter).
       const zoneEntries = [];
+      
       for (const f of feats) {
         let center = null;
         try {
@@ -864,7 +954,10 @@ let c = null;
         if (!center) continue;
 
         const zKey = zoneKeyFromProps(f.properties || {});
-        zoneEntries.push({ feature: f, center: [center.lng, center.lat], zKey });
+        
+        const zId = (zKey && String(zKey).trim()) ? String(zKey).trim() : null;
+        if (zId) zonesById.set(zId, f);
+zoneEntries.push({ feature: f, center: [center.lng, center.lat], zKey });
       }
 
       // Wait for PDs to be loaded, then build index (PD key -> zone features)
