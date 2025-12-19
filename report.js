@@ -807,35 +807,36 @@
     options: { position: 'topleft' },
     onAdd: function () {
       const div = L.DomUtil.create('div', 'report-control');
-
-      // Single full-width button (box still visible as white border via control styling)
       div.innerHTML = `
         <div style="padding:8px;">
-          <button type="button" id="rt-view-report"
-            disabled
+          <button type="button" id="rt-view-report" disabled
             style="
-              width:100%;
-              display:flex;
-              align-items:center;
-              justify-content:center;
-              padding:14px 12px;
-              border-radius:14px;
-              border:1px solid rgba(0,0,0,.18);
-              font-weight:700;
-              font-size:16px;
-              background:#d9d9d9;
-              color:#000;
-              cursor:not-allowed;
+              width: 100%;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 14px 12px;
+              border-radius: 14px;
+              border: 1px solid rgba(0,0,0,0.18);
+              font-weight: 700;
+              font-size: 16px;
+              background: #d9d9d9;
+              color: #000;
+              cursor: not-allowed;
             "
           >View Report</button>
         </div>
       `;
+const btn = div.querySelector('#rt-view-report');
+      // Enable the button only after routes have been generated (RoutingCache populated).
+      function isReportReady() {
+        const cache = global.ROUTING_CACHE;
+        return !!(cache && Array.isArray(cache.trips) && cache.trips.length);
+      }
 
-      const btn = div.querySelector('#rt-view-report');
-
-      function setBtn(enabled) {
+      function setBtnState(ready) {
         if (!btn) return;
-        if (enabled) {
+        if (ready) {
           btn.disabled = false;
           btn.style.background = '#228B22'; // forest green
           btn.style.color = '#fff';
@@ -848,33 +849,20 @@
         }
       }
 
-      function isReady() {
-        const cache = global.ROUTING_CACHE;
-        return !!(cache && Array.isArray(cache.trips) && cache.trips.length);
-      }
+      // Initial state + keep in sync (routing finishes later; cache may clear on "Clear")
+      setBtnState(isReportReady());
+      const __rtTimer = setInterval(() => {
+        if (!div.isConnected) { clearInterval(__rtTimer); return; }
+        setBtnState(isReportReady());
+      }, 300);
 
       if (btn) {
         btn.addEventListener('click', function (e) {
-          // Button is disabled until ready; keep logic identical once enabled
           e.preventDefault();
           e.stopPropagation();
-          if (!isReady()) return;
-          printReport();
-        });
+          if (isReportReady()) { printReport(); }
+          });
       }
-
-      // Keep state synced (routing can finish later; cache can be cleared later)
-      setBtn(isReady());
-      const timer = setInterval(() => {
-        if (!div.isConnected) { clearInterval(timer); return; }
-        setBtn(isReady());
-      }, 300);
-
-      L.DomEvent.disableClickPropagation(div);
-      return div;
-    }
-  });
-}
       L.DomEvent.disableClickPropagation(div);
       return div;
     }
