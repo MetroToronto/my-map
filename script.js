@@ -1083,10 +1083,14 @@ let c = null;
     setTimeout(reorderLoop, 120);
   })();
 
-  // --------------------- Compass control (rotate with mouse, dblclick reset) ---------------------
+  // --------------------- Compass control (drag to rotate map, dblclick reset) ---------------------
+  // IMPORTANT:
+  // - Leaflet core does NOT rotate maps.
+  // - If you include the "leaflet-rotate" plugin in index.html, it adds map.setBearing()/getBearing()
+  //   and this compass will rotate the map. Without it, the compass will still rotate visually.
   const CompassControl = L.Control.extend({
     options: { position: 'topright' },
-    onAdd: function () {
+    onAdd: function (map) {
       const container = L.DomUtil.create('div', 'leaflet-control leaflet-control-compass leaflet-bar');
       container.setAttribute('aria-label', 'Compass');
 
@@ -1097,7 +1101,6 @@ let c = null;
       btn.setAttribute('role', 'button');
       btn.setAttribute('aria-label', 'Compass');
 
-      // Simple SVG compass (needle + N)
       btn.innerHTML = `
         <div class="compass-inner">
           <div class="compass-ring"></div>
@@ -1110,31 +1113,49 @@ let c = null;
       try { stopMapEvents(container); } catch {}
 
       let dragging = false;
-      let angleDeg = 0;
+      let rafPending = false;
+      let pendingDeg = 0;
 
-      function setAngle(deg) {
-        angleDeg = deg;
-        const needle = container.querySelector('.compass-needle');
-        if (needle) needle.style.transform = `rotate(${deg}deg)`;
+      function normDeg(deg) {
+        const d = deg % 360;
+        return d < 0 ? d + 360 : d;
       }
 
-      function centerAndAngleFromEvent(ev) {
+      function applyDeg(deg) {
+        const needle = container.querySelector('.compass-needle');
+        if (needle) needle.style.transform = `rotate(${deg}deg)`;
+
+        // Rotate map if plugin is present
+        if (map && typeof map.setBearing === 'function') {
+          map.setBearing(normDeg(deg));
+        }
+      }
+
+      function scheduleApply(deg) {
+        pendingDeg = deg;
+        if (rafPending) return;
+        rafPending = true;
+        requestAnimationFrame(() => {
+          rafPending = false;
+          applyDeg(pendingDeg);
+        });
+      }
+
+      function degFromEvent(ev) {
         const rect = btn.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
         const x = (ev.clientX - cx);
         const y = (ev.clientY - cy);
-        // 0deg = North (up). atan2 gives angle from +x; we shift so up is 0.
+        // 0deg = North (up). atan2 gives angle from +x; shift so up is 0.
         const a = Math.atan2(y, x) * 180 / Math.PI; // -180..180, 0 at +x (east)
-        const deg = a + 90; // make 0 at north
-        return deg;
+        return a + 90;
       }
 
       function onMove(ev) {
         if (!dragging) return;
         ev.preventDefault();
-        const deg = centerAndAngleFromEvent(ev);
-        setAngle(deg);
+        scheduleApply(degFromEvent(ev));
       }
 
       function onUp() {
@@ -1150,13 +1171,23 @@ let c = null;
         document.addEventListener('mouseup', onUp, true);
       });
 
+      // Double-click => reset to north
       btn.addEventListener('dblclick', (ev) => {
         ev.preventDefault();
-        setAngle(0);
+        scheduleApply(0);
       });
 
-      // start north
-      setAngle(0);
+      // Start north (or current bearing if plugin exists)
+      try {
+        if (map && typeof map.getBearing === 'function') {
+          const b = map.getBearing() || 0;
+          scheduleApply(b);
+        } else {
+          scheduleApply(0);
+        }
+      } catch {
+        scheduleApply(0);
+      }
 
       return container;
     }
@@ -1165,16 +1196,35 @@ let c = null;
   const compass = new CompassControl();
   map.addControl(compass);
 
-  // Place compass immediately left of the zoom control
-  (function placeCompass() {
-    const right = document.querySelector('.leaflet-top.leaflet-right');
-    if (!right) return;
-    const compassEl = right.querySelector('.leaflet-control-compass');
-    const zoomEl = right.querySelector('.leaflet-control-zoom');
-    if (compassEl && zoomEl) {
-      // Ensure order: compass then zoom
-      right.insertBefore(compassEl, zoomEl);
+  // Put compass to the LEFT of zoom (horizontal row), without changing global CSS.
+  (function groupCompassAndZoom() {
+    const corner = map && map._controlCorners && map._controlCorners.topright;
+    if (!corner) return;
+
+    const compassEl = corner.querySelector('.leaflet-control-compass');
+    const zoomEl = corner.querySelector('.leaflet-control-zoom');
+    if (!compassEl || !zoomEl) return;
+
+    let row = corner.querySelector('.compass-zoom-row');
+    if (!row) {
+      row = L.DomUtil.create('div', 'compass-zoom-row', corner);
+      // Keep row at the top of the corner
+      corner.insertBefore(row, corner.firstChild);
+      row.style.display = 'flex';
+      row.style.gap = '6px';
+      row.style.alignItems = 'stretch';
+      row.style.marginTop = '10px';
+      row.style.marginRight = '10px';
+      row.style.pointerEvents = 'auto';
     }
+
+    // Remove Leaflet default margins on the controls in this row
+    compassEl.style.margin = '0';
+    zoomEl.style.margin = '0';
+
+    // Order: compass then zoom
+    row.appendChild(compassEl);
+    row.appendChild(zoomEl);
   })();
 
 })();
