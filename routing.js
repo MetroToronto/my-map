@@ -756,9 +756,9 @@
     });
   }
 
+  
 
-
-  // Overlay for missing origin (match “single PD” popup style)
+  // Overlay for “no origin selected” (match style of single-PD popup)
   function showNoOriginPopup() {
     const existing = document.getElementById('routing-origin-overlay');
     if (existing) existing.remove();
@@ -784,7 +784,6 @@
     box.innerHTML = `
       <h3 style="margin:0 0 8px 0;">Select an origin</h3>
       <p style="margin:0 0 12px 0;font-size:0.95em;">
-        <strong>Trip generation</strong> requires an origin point.
         Please pick an origin using the address search bar before generating trips.
       </p>
       <div style="text-align:right;">
@@ -802,8 +801,7 @@
     });
   }
 
-
-  // ===== Button state =====
+// ===== Button state =====
   function setBusy(mode, busy) {
     const btnPD    = byId('rt-gen-pd');
     const btnPZ    = byId('rt-gen-pz');
