@@ -203,7 +203,7 @@ const PD_LABEL_MAX_INCREASE = 0.40;  // +40% max at max zoom
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, zoom - PD_LABEL_MIN_ZOOM);
     const scaleCap = PD_LABEL_MAX_FS / PD_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.18, dz), scaleCap); // ~18% per zoom level
+    const scale = Math.min(Math.pow(1.30, dz), scaleCap); // ~18% per zoom level
     const fs = PD_LABEL_MIN_FS * scale;
     return clamp(fs, PD_LABEL_MIN_FS, PD_LABEL_MAX_FS);
   }
@@ -624,7 +624,7 @@ nameEl.addEventListener('click', clickHandler);
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, z - PZ_LABEL_MIN_ZOOM);
     const scaleCap = PZ_LABEL_MAX_FS / PZ_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.14, dz), scaleCap); // ~14% per zoom level
+    const scale = Math.min(Math.pow(1.20, dz), scaleCap); // ~14% per zoom level
     const fs = PZ_LABEL_MIN_FS * scale;
     return clamp(fs, PZ_LABEL_MIN_FS, PZ_LABEL_MAX_FS);
   }
