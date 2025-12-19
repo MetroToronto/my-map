@@ -161,7 +161,14 @@
   const pdGroup = L.layerGroup().addTo(map);
   const pdLabelGroup = L.layerGroup().addTo(map);
 
-  const PD_LABEL_MAX_INCREASE = 0.40;
+  
+  // ---- Zoom-based label scaling (percentage growth, capped) ----
+  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+  function computeScaleByZoom(zoom, minZoom, maxZoom, maxIncrease) {
+    const t = clamp01((zoom - minZoom) / Math.max(1, (maxZoom - minZoom)));
+    return 1 + (maxIncrease * t);
+  }
+const PD_LABEL_MAX_INCREASE = 0.40;
   const PD_LABEL_MIN_ZOOM = 10;        // show labels when closer         // show labels when closer
   const PD_LABEL_MAX_FS   = 18;
   const PD_LABEL_MIN_FS   = 11;
@@ -194,9 +201,13 @@
   const pdLabelMarkers = new Map(); // key -> marker
 
   function pdLabelFontSize(zoom) {
-    // gentle scale: +1.2px per zoom step
-    const fs = PD_LABEL_MIN_FS + (zoom - PD_LABEL_MIN_ZOOM) * 1.2;
-    return clamp(fs, PD_LABEL_MIN_FS, PD_LABEL_MAX_F
+    const maxZ = (typeof map.getMaxZoom === 'function' ? (map.getMaxZoom() || 18) : 18);
+    const scale = computeScaleByZoom(zoom, PD_LABEL_MIN_ZOOM, maxZ, PD_LABEL_MAX_INCREASE);
+    const fs = PD_LABEL_MIN_FS * scale;
+    return clamp(fs, PD_LABEL_MIN_FS, PD_LABEL_MAX_FS);
+  }
+
+  function updatePDLabels() {
     const z = map.getZoom();
     const show = z >= PD_LABEL_MIN_ZOOM;
 
@@ -213,17 +224,6 @@ if (!show || hideBecauseZones) {
       } else {
         labelEl.classList.remove('is-hidden');
         labelEl.style.setProperty('--fs', `${pdLabelFontSize(z)}px`);
-      }
-    }
-  
-
-    // Apply zoom-based scaling to PD labels
-    const z = map.getZoom();
-    const maxZ = (typeof map.getMaxZoom === 'function' ? (map.getMaxZoom() || 18) : 18);
-    const s = computeLabelScale(z, PD_LABEL_MIN_ZOOM, maxZ, PD_LABEL_MAX_INCREASE);
-    document.querySelectorAll('.map-label.pd-label').forEach(el => applyLabelScale(el, s));
-
-abelFontSize(z)}px`);
       }
     }
   }
@@ -269,6 +269,7 @@ abelFontSize(z)}px`);
     for (const key of Array.from(selectedPDs)) setPDSelected(key, false);
     selectedPDs.clear();
     scheduleLabelUpdate();
+      updateSelectedZoneLabel();
   }
 
   function selectAllPDs() {
@@ -596,27 +597,11 @@ nameEl.addEventListener('click', clickHandler);
 
   const PZ_LABEL_MAX_INCREASE = 0.20;
   const PZ_LABEL_MIN_ZOOM = 13;
-
-  // ===== Label scaling helpers (smooth growth with zoom) =====
-  function clamp01(x) { return Math.max(0, Math.min(1, x)); }
-
-  // maxIncrease: 0.2 means +20% by maxZoom (relative to minZoom)
-  function computeLabelScale(zoom, minZoom, maxZoom, maxIncrease) {
-    const t = clamp01((zoom - minZoom) / Math.max(1, (maxZoom - minZoom)));
-    return 1 + (maxIncrease * t);
-  }
-
-  function applyLabelScale(el, scale) {
-    if (!el) return;
-    el.style.transformOrigin = 'center';
-    el.style.transform = `scale(${scale})`;
-  }
   const PZ_LABEL_MIN_FS   = 10;
   const PZ_LABEL_MAX_FS   = 15;
 
   const pzLabelMarkers = new Map(); // zoneKey -> marker
   let selectedZoneLayer = null;
-  let selectedZoneLabelMarker = null;
   // Persistent selected zone overlay (stays even when zones are disengaged)
   const selectedZonePersistGroup = L.layerGroup().addTo(map);
   let selectedZonePersistLayer = null;
@@ -627,7 +612,9 @@ nameEl.addEventListener('click', clickHandler);
 
 
   function pzLabelFontSize(z) {
-    const fs = PZ_LABEL_MIN_FS + (z - PZ_LABEL_MIN_ZOOM) * 1.0;
+    const maxZ = (typeof map.getMaxZoom === 'function' ? (map.getMaxZoom() || 18) : 18);
+    const scale = computeScaleByZoom(z, PZ_LABEL_MIN_ZOOM, maxZ, PZ_LABEL_MAX_INCREASE);
+    const fs = PZ_LABEL_MIN_FS * scale;
     return clamp(fs, PZ_LABEL_MIN_FS, PZ_LABEL_MAX_FS);
   }
 
@@ -654,15 +641,63 @@ nameEl.addEventListener('click', clickHandler);
                     zoneKeyFromProps((selectedZoneLayer.feature.properties || {})) === zKey;
       labelEl.classList.toggle('is-selected', !!isSel);
     }
-  
+  }
 
-    // Apply zoom-based scaling to TZ labels
+
+  function setSelectedZonePersistent(feature) {
+    if (!feature) return;
+    const id = zoneKeyFromProps(feature.properties || {});
+    selectedZoneId = id;
+
+    // remove old
+    if (selectedZonePersistLayer) {
+      try { selectedZonePersistGroup.removeLayer(selectedZonePersistLayer); } catch {}
+      selectedZonePersistLayer = null;
+    }
+    if (selectedZoneLabelMarker) {
+      try { selectedZoneLabelGroup.removeLayer(selectedZoneLabelMarker); } catch {}
+      selectedZoneLabelMarker = null;
+    }
+
+    // add persistent highlight
+    selectedZonePersistLayer = L.geoJSON(feature, {
+      style: ZONE_SELECTED_STYLE,
+      interactive: false
+    }).addTo(selectedZonePersistGroup);
+
+    // on top
+    try { selectedZonePersistLayer.bringToFront(); } catch {}
+    updateSelectedZoneLabel();
+  }
+
+  function updateSelectedZoneLabel() {
+    // Only show label if a TZ is selected and we're zoomed in enough
+    if (selectedZoneLabelMarker) {
+      try { selectedZoneLabelGroup.removeLayer(selectedZoneLabelMarker); } catch {}
+      selectedZoneLabelMarker = null;
+    }
+    if (!selectedZonePersistLayer || !selectedZoneId) return;
+
     const z = map.getZoom();
-    const maxZ = (typeof map.getMaxZoom === 'function' ? (map.getMaxZoom() || 18) : 18);
-    const s = computeLabelScale(z, PZ_LABEL_MIN_ZOOM, maxZ, PZ_LABEL_MAX_INCREASE);
-    document.querySelectorAll('.map-label.pz-label').forEach(el => applyLabelScale(el, s));
+    if (z < PZ_LABEL_MIN_ZOOM) return;
 
-}
+    let center = null;
+    try { center = selectedZonePersistLayer.getBounds().getCenter(); } catch {}
+    if (!center) return;
+
+    const zKeySafe = String(selectedZoneId).trim();
+    selectedZoneLabelMarker = L.marker(center, {
+      interactive: false,
+      keyboard: false,
+      icon: L.divIcon({
+        className: '',
+        html: `<div class="map-label pz-label is-selected" style="--fs:${pzLabelFontSize(z)}px">TZ ${zKeySafe}</div>`,
+        iconSize: [1, 1]
+      })
+    }).addTo(selectedZoneLabelGroup);
+  }
+
+
 
   function centerOfZoneFeature(f) {
     try {
@@ -677,10 +712,21 @@ nameEl.addEventListener('click', clickHandler);
   }
 
   function clearZoneSelection() {
-    if (selectedZoneLayer) selectedZoneLayer.setStyle(ZONE_BASE_STYLE);
+    // Clears the selected TZ entirely (both persistent highlight + label)
+    if (selectedZoneLayer) {
+      try { selectedZoneLayer.setStyle(ZONE_BASE_STYLE); } catch {}
+    }
     selectedZoneLayer = null;
-    try { map.closePopup(); } catch {}
-    updatePZLabels();
+    selectedZoneId = null;
+
+    if (selectedZonePersistLayer) {
+      try { selectedZonePersistGroup.removeLayer(selectedZonePersistLayer); } catch {}
+      selectedZonePersistLayer = null;
+    }
+    if (selectedZoneLabelMarker) {
+      try { selectedZoneLabelGroup.removeLayer(selectedZoneLabelMarker); } catch {}
+      selectedZoneLabelMarker = null;
+    }
   }
 
   function clearPersistentZoneSelection() {
@@ -743,7 +789,7 @@ nameEl.addEventListener('click', clickHandler);
 
   function selectZone(layer) {
     if (selectedZoneLayer === layer) {
-      clearZoneSelection();
+    // keep selected TZ persistent even when clearing current zone view
       return;
     }
     if (selectedZoneLayer) selectedZoneLayer.setStyle(ZONE_BASE_STYLE);
@@ -830,9 +876,20 @@ if (selectedZoneLayer && selectedZoneLayer.bringToFront) selectedZoneLayer.bring
       style: ZONE_BASE_STYLE,
       onEachFeature: (feature, layer) => {
         layer.on('click', () => {
-          if (!zonesEngaged) return;
-          selectZone(layer);
-        });
+            const zId = zoneKeyFromProps(feature.properties || {});
+            // Toggle
+            if (selectedZoneId && String(selectedZoneId) === String(zId)) {
+              clearZoneSelection();
+            } else {
+              // Selecting a TZ clears PD selection
+              clearAllPDSelection(true);
+              setSelectedZonePersistent(feature);
+            }
+            // refresh label visibility/sizing
+            updatePZLabels();
+            updateSelectedZoneLabel();
+          });
+});
 
         // Create a label marker for this zone (centered)
         const zKey = zoneKeyFromProps(feature.properties || {});
