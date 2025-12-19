@@ -144,7 +144,7 @@
 
   const PD_BASE_STYLE = {
     color: '#ffb347',      // light orange border
-    weight: 3.5,
+    weight: 5,
     opacity: 0.95,
     fillColor: '#ffd7a8',  // light orange fill
     fillOpacity: 0.22
@@ -152,7 +152,7 @@
 
   const PD_SELECTED_STYLE = {
     color: '#ff3b30',
-    weight: 7.5,
+    weight: 10,
     opacity: 1,
     fillColor: '#ff3b30',
     fillOpacity: 0.30
@@ -203,7 +203,7 @@ const PD_LABEL_MAX_INCREASE = 0.40;  // +40% max at max zoom
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, zoom - PD_LABEL_MIN_ZOOM);
     const scaleCap = PD_LABEL_MAX_FS / PD_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.50, dz), scaleCap); // ~18% per zoom level
+    const scale = Math.min(Math.pow(1.40, dz), scaleCap); // ~18% per zoom level
     const fs = PD_LABEL_MIN_FS * scale;
     return clamp(fs, PD_LABEL_MIN_FS, PD_LABEL_MAX_FS);
   }
@@ -587,7 +587,7 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_BASE_STYLE = {
     color: '#0b5fff',
-    weight: 3.5,
+    weight: 5,
     opacity: 0.65,
     fillColor: '#0b5fff',
     fillOpacity: 0.06
@@ -595,7 +595,7 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_SELECTED_STYLE = {
     color: '#0b5fff',
-    weight: 7.5,
+    weight: 10,
     opacity: 1,
     fillColor: '#0b5fff',
     fillOpacity: 0.10
@@ -624,7 +624,7 @@ nameEl.addEventListener('click', clickHandler);
     // Exponential growth per zoom level (noticeable but capped)
     const dz = Math.max(0, z - PZ_LABEL_MIN_ZOOM);
     const scaleCap = PZ_LABEL_MAX_FS / PZ_LABEL_MIN_FS;
-    const scale = Math.min(Math.pow(1.40, dz), scaleCap); // ~14% per zoom level
+    const scale = Math.min(Math.pow(1.80, dz), scaleCap); // ~14% per zoom level
     const fs = PZ_LABEL_MIN_FS * scale;
     return clamp(fs, PZ_LABEL_MIN_FS, PZ_LABEL_MAX_FS);
   }
