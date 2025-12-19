@@ -222,7 +222,7 @@ if (!show || hideBecauseZones) {
         labelEl.classList.add('is-hidden');
       } else {
         labelEl.classList.remove('is-hidden');
-        labelEl.style.setProperty('--fs', `${pdLabelFontSize(z)}px`);
+        labelEl.style.fontSize = `${pdLabelFontSize(z)}px`;
       }
     }
   }
@@ -233,7 +233,7 @@ if (!show || hideBecauseZones) {
       keyboard: false,
       icon: L.divIcon({
         className: '',
-        html: `<div class="map-label pd-label" data-pd="${encodeURIComponent(key)}">${name}</div>`,
+        html: `<div class="map-label pd-label" data-pd="${encodeURIComponent(key)}" style="font-size:${pdLabelFontSize(map.getZoom())}px">${name}</div>`,
         iconSize: [1, 1]
       })
     });
@@ -637,7 +637,7 @@ nameEl.addEventListener('click', clickHandler);
       }
 
       labelEl.classList.remove('is-hidden');
-      labelEl.style.setProperty('--fs', `${pzLabelFontSize(z)}px`);
+      labelEl.style.fontSize = `${pzLabelFontSize(z)}px`;
 
       // selected zone emphasis
       const isSel = selectedZoneLayer && selectedZoneLayer.feature &&
@@ -670,7 +670,7 @@ nameEl.addEventListener('click', clickHandler);
       keyboard: false,
       icon: L.divIcon({
         className: '',
-        html: `<div class="map-label pz-label is-selected" data-pz="${encodeURIComponent(zKeySafe)}" style="--fs:${pzLabelFontSize(z)}px">TZ ${zKeySafe}</div>`,
+        html: `<div class="map-label pz-label is-selected" data-pz="${encodeURIComponent(zKeySafe)}" style="font-size:${pzLabelFontSize(z)}px">TZ ${zKeySafe}</div>`,
         iconSize: [1, 1]
       })
     });
@@ -865,7 +865,7 @@ let c = null;
             keyboard: false,
             icon: L.divIcon({
               className: '',
-              html: `<div class="map-label pz-label" data-pz="${encodeURIComponent(zKeySafe)}">TZ ${zKeySafe}</div>`,
+              html: `<div class="map-label pz-label" data-pz="${encodeURIComponent(zKeySafe)}" style="font-size:${pzLabelFontSize(map.getZoom())}px">TZ ${zKeySafe}</div>`,
               iconSize: [1, 1]
             })
           }).addTo(pzLabelGroup);
