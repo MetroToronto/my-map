@@ -144,7 +144,7 @@
 
   const PD_BASE_STYLE = {
     color: '#ffb347',      // light orange border
-    weight: 5,
+    weight: 3.5,
     opacity: 0.95,
     fillColor: '#ffd7a8',  // light orange fill
     fillOpacity: 0.22
@@ -152,7 +152,7 @@
 
   const PD_SELECTED_STYLE = {
     color: '#ff3b30',
-    weight: 10,
+    weight: 7.5,
     opacity: 1,
     fillColor: '#ff3b30',
     fillOpacity: 0.30
@@ -587,7 +587,7 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_BASE_STYLE = {
     color: '#0b5fff',
-    weight: 5,
+    weight: 3.5,
     opacity: 0.65,
     fillColor: '#0b5fff',
     fillOpacity: 0.06
@@ -595,7 +595,7 @@ nameEl.addEventListener('click', clickHandler);
 
   const ZONE_SELECTED_STYLE = {
     color: '#0b5fff',
-    weight: 10,
+    weight: 7.5,
     opacity: 1,
     fillColor: '#0b5fff',
     fillOpacity: 0.10
