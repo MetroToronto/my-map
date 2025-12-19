@@ -807,20 +807,74 @@
     options: { position: 'topleft' },
     onAdd: function () {
       const div = L.DomUtil.create('div', 'report-control');
+
+      // Single full-width button (box still visible as white border via control styling)
       div.innerHTML = `
-        <div class="routing-header"><strong>Report</strong></div>
-        <div class="routing-row">
-          <button type="button" id="rt-print-report">Print Report</button>
+        <div style="padding:8px;">
+          <button type="button" id="rt-view-report"
+            disabled
+            style="
+              width:100%;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+              padding:14px 12px;
+              border-radius:14px;
+              border:1px solid rgba(0,0,0,.18);
+              font-weight:700;
+              font-size:16px;
+              background:#d9d9d9;
+              color:#000;
+              cursor:not-allowed;
+            "
+          >View Report</button>
         </div>
       `;
-      const btn = div.querySelector('#rt-print-report');
+
+      const btn = div.querySelector('#rt-view-report');
+
+      function setBtn(enabled) {
+        if (!btn) return;
+        if (enabled) {
+          btn.disabled = false;
+          btn.style.background = '#228B22'; // forest green
+          btn.style.color = '#fff';
+          btn.style.cursor = 'pointer';
+        } else {
+          btn.disabled = true;
+          btn.style.background = '#d9d9d9';
+          btn.style.color = '#000';
+          btn.style.cursor = 'not-allowed';
+        }
+      }
+
+      function isReady() {
+        const cache = global.ROUTING_CACHE;
+        return !!(cache && Array.isArray(cache.trips) && cache.trips.length);
+      }
+
       if (btn) {
         btn.addEventListener('click', function (e) {
+          // Button is disabled until ready; keep logic identical once enabled
           e.preventDefault();
           e.stopPropagation();
+          if (!isReady()) return;
           printReport();
         });
       }
+
+      // Keep state synced (routing can finish later; cache can be cleared later)
+      setBtn(isReady());
+      const timer = setInterval(() => {
+        if (!div.isConnected) { clearInterval(timer); return; }
+        setBtn(isReady());
+      }, 300);
+
+      L.DomEvent.disableClickPropagation(div);
+      return div;
+    }
+  });
+}
       L.DomEvent.disableClickPropagation(div);
       return div;
     }
