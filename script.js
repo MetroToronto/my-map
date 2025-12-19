@@ -20,7 +20,7 @@
   map.zoomControl.setPosition('topright');
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 15,
+    maxZoom: 16,
     attribution: '© OpenStreetMap'
   }).addTo(map);
 
