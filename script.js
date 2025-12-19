@@ -268,9 +268,6 @@ if (!show || hideBecauseZones) {
   }
 
   function handlePDClick(key, additive) {
-    // Selecting a PD clears any selected traffic zone
-    clearZoneSelectionOverlay();
-
     if (!additive) {
       // single-select behavior:
       // - if this is the only selected PD already, toggle it OFF (for list checkbox usability)
@@ -569,80 +566,7 @@ nameEl.addEventListener('click', clickHandler);
   // --------------------- Planning Zones (Traffic Zones) ---------------------
   const ZONES_URL = 'data/tts_zones.json?v=' + Date.now();
 
-  const zoneGroup = L.layerGroup();
-  // Persistent zone selection overlay (stays even when zones are disengaged)
-  const persistentZoneSelGroup = L.layerGroup().addTo(map);
-  let selectedZoneKey = null;
-  let selectedZoneOverlay = null;
-
-  // All zones index by TTS2022 (string key) -> GeoJSON feature
-  const ZONE_FEATURE_BY_KEY = new Map();
-
-  function clearZoneSelectionOverlay() {
-    selectedZoneKey = null;
-    if (selectedZoneOverlay) {
-      try { persistentZoneSelGroup.removeLayer(selectedZoneOverlay); } catch {}
-      selectedZoneOverlay = null;
-    }
-  }
-
-  function setZoneSelectionOverlay(feature, keyStr) {
-    clearZoneSelectionOverlay();
-    selectedZoneKey = String(keyStr);
-
-    selectedZoneOverlay = L.geoJSON(feature, {
-      style: () => ZONE_SELECTED_STYLE,
-      interactive: true
-    }).addTo(persistentZoneSelGroup);
-
-    try { selectedZoneOverlay.bringToFront(); } catch {}
-
-    selectedZoneOverlay.on('click', () => {
-      clearZoneSelectionOverlay();
-      if (selectedZoneLayer) {
-        try { selectedZoneLayer.setStyle(ZONE_BASE_STYLE); } catch {}
-        selectedZoneLayer = null;
-      }
-    });
-  }
-
-  function toggleZoneSelectionByKey(keyStr, maybeLayer, maybeFeature) {
-    const k = String(keyStr).trim();
-    if (!k) return;
-
-    if (selectedZoneKey && selectedZoneKey === k) {
-      clearZoneSelectionOverlay();
-      if (selectedZoneLayer) {
-        try { selectedZoneLayer.setStyle(ZONE_BASE_STYLE); } catch {}
-        selectedZoneLayer = null;
-      }
-      return;
-    }
-
-    // Selecting a zone clears PD selection (map + list)
-    clearAllPDSelection(true);
-
-    const feature = maybeFeature || ZONE_FEATURE_BY_KEY.get(k);
-    if (!feature) {
-      alert('Zone feature not loaded for: ' + k);
-      return;
-    }
-
-    setZoneSelectionOverlay(feature, k);
-
-    if (maybeLayer && maybeLayer.setStyle) {
-      if (selectedZoneLayer && selectedZoneLayer !== maybeLayer) {
-        try { selectedZoneLayer.setStyle(ZONE_BASE_STYLE); } catch {}
-      }
-      selectedZoneLayer = maybeLayer;
-      try { selectedZoneLayer.setStyle(ZONE_SELECTED_STYLE); } catch {}
-      try { selectedZoneLayer.bringToFront(); } catch {}
-    }
-
-    scheduleLabelUpdate();
-    updatePZLabels();
-  }
- // not added until engaged
+  const zoneGroup = L.layerGroup(); // not added until engaged
   const pzLabelGroup = L.layerGroup().addTo(map);
 
   const ZONE_BASE_STYLE = {
@@ -667,6 +591,14 @@ nameEl.addEventListener('click', clickHandler);
 
   const pzLabelMarkers = new Map(); // zoneKey -> marker
   let selectedZoneLayer = null;
+  // Persistent selected zone overlay (stays even when zones are disengaged)
+  const selectedZonePersistGroup = L.layerGroup().addTo(map);
+  let selectedZonePersistLayer = null;
+  let selectedZoneId = null;
+
+  // Zone lookup by id (TTS2022)
+  const zonesById = new Map(); // zoneId -> feature
+
 
   function pzLabelFontSize(z) {
     const fs = PZ_LABEL_MIN_FS + (z - PZ_LABEL_MIN_ZOOM) * 1.0;
@@ -717,9 +649,67 @@ nameEl.addEventListener('click', clickHandler);
     updatePZLabels();
   }
 
+  function clearPersistentZoneSelection() {
+    if (selectedZonePersistLayer) {
+      try { selectedZonePersistGroup.removeLayer(selectedZonePersistLayer); } catch {}
+    }
+    selectedZonePersistLayer = null;
+    selectedZoneId = null;
+  }
+
+  function setPersistentZoneSelection(feature, { zoomTo = true } = {}) {
+    if (!feature) return;
+
+    const zKey = zoneKeyFromProps(feature.properties || {});
+    const zId = String(zKey).trim();
+
+    // Toggle off if selecting the same zone again
+    if (selectedZoneId && zId && selectedZoneId === zId) {
+      clearPersistentZoneSelection();
+      return;
+    }
+
+    clearPersistentZoneSelection();
+
+    selectedZoneId = zId || null;
+
+    // Build a dedicated layer for the selected zone so it can remain visible even if zones are disengaged
+    selectedZonePersistLayer = L.geoJSON(feature, {
+      style: ZONE_SELECTED_STYLE,
+      interactive: true
+    });
+
+    selectedZonePersistLayer.eachLayer((lyr) => {
+      // clicking again toggles it off (works even when zones are disengaged)
+      lyr.on('click', () => {
+        // only toggle if this is still the selected id
+        if (selectedZoneId === zId) clearPersistentZoneSelection();
+      });
+      if (lyr.bringToFront) lyr.bringToFront();
+    });
+
+    selectedZonePersistGroup.addLayer(selectedZonePersistLayer);
+
+    // Selecting a zone clears all PD selections (list + map)
+    clearAllPDSelection(true);
+    scheduleLabelUpdate();
+
+    // Zoom to zone
+    if (zoomTo) {
+      try {
+        const b = selectedZonePersistLayer.getBounds && selectedZonePersistLayer.getBounds();
+        if (b && b.isValid && b.isValid()) {
+          map.fitBounds(b.pad(0.15));
+          if (map.getZoom() < PZ_LABEL_MIN_ZOOM) map.setZoom(PZ_LABEL_MIN_ZOOM);
+        }
+      } catch {}
+    }
+  }
+
+
   function selectZone(layer) {
     if (selectedZoneLayer === layer) {
-    // (keep selected zone persistent overlay; do not clear here)
+      clearZoneSelection();
       return;
     }
     if (selectedZoneLayer) selectedZoneLayer.setStyle(ZONE_BASE_STYLE);
@@ -727,7 +717,10 @@ nameEl.addEventListener('click', clickHandler);
     if (selectedZoneLayer) selectedZoneLayer.setStyle(ZONE_SELECTED_STYLE);
 
     
-    if (selectedZoneLayer && selectedZoneLayer.bringToFront) selectedZoneLayer.bringToFront();
+    
+    // Persist selection so it remains after disengaging zones
+    try { if (layer && layer.feature) setPersistentZoneSelection(layer.feature, { zoomTo: false }); } catch {}
+if (selectedZoneLayer && selectedZoneLayer.bringToFront) selectedZoneLayer.bringToFront();
 // Selecting a zone clears all PD selections (list + map)
     clearAllPDSelection(true);
 
@@ -772,7 +765,7 @@ nameEl.addEventListener('click', clickHandler);
     zoneGroup.clearLayers();
     pzLabelGroup.clearLayers();
     pzLabelMarkers.clear();
-    // (keep selected zone persistent overlay; do not clear here)
+    clearZoneSelection();
   }
 
   function showZonesForPD(pdKey) {
@@ -789,7 +782,8 @@ nameEl.addEventListener('click', clickHandler);
     zoneGroup.clearLayers();
     pzLabelGroup.clearLayers();
     pzLabelMarkers.clear();
-    // (keep selected zone persistent overlay; do not clear here)
+    clearZoneSelection();
+
     const feats = zonesByKey.get(key) || [];
     if (!feats.length) {
       scheduleLabelUpdate();
@@ -808,9 +802,7 @@ nameEl.addEventListener('click', clickHandler);
 
         // Create a label marker for this zone (centered)
         const zKey = zoneKeyFromProps(feature.properties || {});
-        
-        ZONE_FEATURE_BY_KEY.set(String(zKey).trim(), f);
-const zKeySafe = (zKey && String(zKey).trim()) ? String(zKey).trim() : '?';
+        const zKeySafe = (zKey && String(zKey).trim()) ? String(zKey).trim() : '?';
 let c = null;
         try {
           if (layer.getBounds) c = layer.getBounds().getCenter();
@@ -901,38 +893,38 @@ let c = null;
   if (btnEngage) btnEngage.addEventListener('click', () => setZonesEngaged(true));
   if (btnDisengage) btnDisengage.addEventListener('click', () => setZonesEngaged(false));
 
-  
   if (inpZoneSearch) {
     inpZoneSearch.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
+
       const raw = (inpZoneSearch.value || '').trim();
       if (!raw) return;
 
       // Accept "TZ 1006" or "1006"
-      const m = raw.match(/(\d+)/);
-      const q = m ? m[1] : raw;
-
-      const feature = ZONE_FEATURE_BY_KEY.get(String(q));
-      if (!feature) {
-        alert('Zone not found: ' + raw);
+      const id = (raw.match(/\d+/g) || []).join('');
+      if (!id) {
+        alert('Enter a zone number, e.g. 1006 or TZ 1006');
         return;
       }
 
-      // Select and zoom even if zones are disengaged
-      toggleZoneSelectionByKey(String(q), null, feature);
+      const feature = zonesById.get(String(id));
+      if (!feature) {
+        alert('Zone not found: ' + id);
+        return;
+      }
 
-      try {
-        const tmp = L.geoJSON(feature);
-        const b = tmp.getBounds();
-        if (b && b.isValid && b.isValid()) {
-          map.fitBounds(b.pad(0.15));
-        }
-      } catch (err) {
-        console.warn('fitBounds failed for zone', err);
+      // Ensure selection persists even if zones are disengaged
+      setPersistentZoneSelection(feature, { zoomTo: true });
+
+      // If zones are engaged, also show the PD's zones so labels appear and user can click zones.
+      if (zonesEngaged) {
+        const pdKey = String((feature.properties && (feature.properties.PD_no ?? feature.properties.pd_no)) ?? '');
+        if (pdKey) showZonesForPD(pdKey);
       }
     });
   }
-// Load zones and build layer + labels
+
+  // Load zones and build layer + labels
   fetch(ZONES_URL)
     .then(r => {
       if (!r.ok) throw new Error(`HTTP ${r.status} for ${r.url || ZONES_URL}`);
@@ -957,6 +949,7 @@ let c = null;
 
         const zKey = zoneKeyFromProps(f.properties || {});
         zoneEntries.push({ feature: f, center: [center.lng, center.lat], zKey });
+        try { zonesById.set(String(zKey), f); } catch {}
       }
 
       // Wait for PDs to be loaded, then build index (PD key -> zone features)
